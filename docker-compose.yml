@@ -1,0 +1,45 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: invoiceflow
+      POSTGRES_USER: invoiceflow
+      POSTGRES_PASSWORD: invoiceflow
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U invoiceflow -d invoiceflow"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+  api:
+    build: .
+    environment:
+      DATABASE_URL: postgres://invoiceflow:invoiceflow@postgres:5432/invoiceflow?sslmode=disable
+      API_ADDR: 0.0.0.0:8080
+      MIGRATIONS_DIR: /app/db/migrations
+      STORAGE_DIR: /data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${API_HOST_PORT:-8080}:8080"
+    volumes:
+      - document_data:/data
+  worker:
+    build: .
+    command: ["/app/invoiceflow-worker"]
+    environment:
+      DATABASE_URL: postgres://invoiceflow:invoiceflow@postgres:5432/invoiceflow?sslmode=disable
+      MIGRATIONS_DIR: /app/db/migrations
+      STORAGE_DIR: /data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - document_data:/data
+volumes:
+  postgres_data:
+  document_data:
