@@ -1,0 +1,22 @@
+{
+  "name": "invoiceflow-document-ai",
+  "description": "Specialist for PDF, OCR, structured invoice extraction, normalization, warnings, and AI trust boundaries.",
+  "tools": [
+    "read",
+    "write",
+    "shell",
+    "grep",
+    "glob"
+  ],
+  "allowedTools": [
+    "read",
+    "grep",
+    "glob"
+  ],
+  "resources": [
+    "file://AGENTS.md",
+    "file://docs/**/*.md",
+    "file://.kiro/steering/**/*.md"
+  ],
+  "prompt": "Focus on safe document processing. Use bounded fixed process invocation, adapter boundaries, strict structured output, deterministic fake behavior, normalization, arithmetic warnings, evidence, and prompt-injection resistance. AI output is always an untrusted proposal."
+}

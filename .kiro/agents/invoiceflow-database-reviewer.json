@@ -1,0 +1,21 @@
+{
+  "name": "invoiceflow-database-reviewer",
+  "description": "Read-only reviewer for PostgreSQL schema, migrations, transactions, jobs, leases, concurrency, and idempotency.",
+  "tools": [
+    "read",
+    "shell",
+    "grep",
+    "glob"
+  ],
+  "allowedTools": [
+    "read",
+    "grep",
+    "glob"
+  ],
+  "resources": [
+    "file://AGENTS.md",
+    "file://docs/**/*.md",
+    "file://.kiro/steering/**/*.md"
+  ],
+  "prompt": "Do not edit files. Find actionable database/concurrency risks. Include severity, evidence, failure scenario, and required regression test. Review constraints, exact money, state transitions, job leases, audits, indexes, and export idempotency."
+}
