@@ -2,22 +2,22 @@ import { useEffect, useRef, useState, type ReactElement, type ReactNode } from '
 import { StatusTag, type StatusTone } from './StatusTag';
 import { useReducedMotion } from '../motion/useReducedMotion';
 
-/* Every value below is the fictional OFFICE-001 demo document that ships in
+/* Every value below is the fictional ORCHARD-001 demo document that ships in
    `testdata/`. The offline extractor in `cmd/worker` is configured with exactly
    these candidates, so this walkthrough shows real demo output rather than
    invented marketing data. */
 const demo = {
-  supplier: 'Fictional Office Goods',
-  email: 'billing@example.test',
-  number: 'OFFICE-001',
+  supplier: 'Orchard Office Supplies',
+  email: 'billing@orchard.example.test',
+  number: 'ORCHARD-001',
   issued: '2026-07-01',
   due: '2026-07-31',
   currency: 'USD',
   subtotal: '20.00',
   tax: '4.00',
   total: '24.00',
-  lineDescription: 'Fictional paper',
-  correctedDescription: 'Fictional paper — A4, 80 gsm',
+  lineDescription: 'Paper archive boxes',
+  correctedDescription: 'Paper archive boxes - reviewed',
   quantity: '2',
   unitPrice: '10.00',
 } as const;
@@ -115,10 +115,10 @@ export function ProvenanceStory(): ReactElement {
   const [active, register] = useActiveStep(!reducedMotion);
 
   return <section id="story" className="story" aria-labelledby="story-title">
-    <div className="story-intro">
+  <div className="story-intro">
       <p className="eyebrow">One document, end to end</p>
       <h2 id="story-title">Each state is visible, and each transition is recorded.</h2>
-      <p className="hero-copy">This walkthrough uses the fictional OFFICE-001 document included in the repository. Running the demo locally produces these values from the offline extractor — no key, no network call, and no customer data.</p>
+      <p className="hero-copy">This walkthrough uses the fictional ORCHARD-001 document included in the repository. Running the demo locally produces these values from the offline extractor — no key, no network call, and no customer data.</p>
     </div>
     <ol className="story-steps" data-motion={reducedMotion ? 'static' : 'scroll'}>
       {steps.map((step, index) => <li

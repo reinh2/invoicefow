@@ -66,7 +66,7 @@ describe('landing page', () => {
     for (const state of ['Stored', 'Extracted', 'Corrected', 'Approved']) {
       expect(story.getByText(state)).toBeVisible();
     }
-    expect(story.getByText('Fictional Office Goods')).toBeVisible();
+    expect(story.getByText('Orchard Office Supplies')).toBeVisible();
     expect(story.getByText(/Human correction/)).toBeVisible();
   });
 

@@ -113,7 +113,7 @@ func TestCreateQueuedDocumentAtomicallyPersistsOriginalAuditAndJob(t *testing.T)
 		t.Fatalf("atomic intake rows objects=%d documents=%d audits=%d jobs=%d, want all 1", objects, documents, audits, jobs)
 	}
 	// Do not leave this independent fixture eligible for the global worker queue.
-	if _, err := pool.Exec(ctx, `UPDATE jobs SET status='succeeded' WHERE document_id=$1`, record.DocumentID); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE jobs SET status='succeeded', next_attempt_at=NULL WHERE document_id=$1`, record.DocumentID); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -194,7 +194,7 @@ func TestCreateQueuedDocumentConcurrentDuplicateHasOneWinner(t *testing.T) {
 	}
 	// ClaimReady is deliberately global, so retire the race fixture before later
 	// tests exercise its one-winner behavior.
-	if _, err := pool.Exec(ctx, `UPDATE jobs SET status='succeeded' WHERE document_id IN (SELECT id FROM documents WHERE sha256=$1)`, first.SHA256[:]); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE jobs SET status='succeeded', next_attempt_at=NULL WHERE document_id IN (SELECT id FROM documents WHERE sha256=$1)`, first.SHA256[:]); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -672,6 +672,10 @@ func TestExportForeignKeyRejectsAnotherVersionOfTheSameDocument(t *testing.T) {
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO exports (id,document_id,version_id,export_type,status,idempotency_key,destination_ref,destination_label) VALUES ($1,$2,$3,'webhook','pending',$4,'server:webhook:v1','Server-configured webhook')`, exportID, record.DocumentID, approvedVersion, "same-document-approved:"+exportID); err != nil {
 		t.Fatalf("approved export version was rejected: %v", err)
+	}
+	duplicateID := mustID(t)
+	if _, err := pool.Exec(ctx, `INSERT INTO exports (id,document_id,version_id,export_type,status,idempotency_key,destination_ref,destination_label) VALUES ($1,$2,$3,'webhook','pending',$4,'server:webhook:v1','Server-configured webhook')`, duplicateID, record.DocumentID, approvedVersion, "duplicate-version-type:"+duplicateID); err == nil || !strings.Contains(err.Error(), "exports_document_version_type_unique") {
+		t.Fatalf("duplicate export version/type error = %v, want uniqueness constraint", err)
 	}
 }
 

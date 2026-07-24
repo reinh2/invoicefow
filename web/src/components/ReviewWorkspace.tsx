@@ -198,7 +198,7 @@ function ConfirmDialog({ title, children, confirmLabel, onConfirm, onClose, disa
     document.addEventListener('keydown', keydown);
     return () => { document.removeEventListener('keydown', keydown); previous?.focus(); };
   }, [disabled, onClose]);
-  return <section ref={dialogRef} className={`confirm-dialog${reducedMotion ? ' confirm-dialog-reduced-motion' : ''}`} role="dialog" aria-modal="true" aria-labelledby="confirm-title" tabIndex={-1}><h2 id="confirm-title">{title}</h2>{children}<div className="review-actions"><button className={`button ${danger ? 'button-danger' : 'button-primary'}`} type="button" disabled={disabled} onClick={onConfirm}>{confirmLabel}</button><button className="button button-quiet" type="button" disabled={disabled} onClick={onClose}>Cancel</button></div></section>;
+  return <div className="confirm-overlay"><div className="confirm-backdrop" aria-hidden="true" /><section ref={dialogRef} className={`confirm-dialog${reducedMotion ? ' confirm-dialog-reduced-motion' : ''}`} role="dialog" aria-modal="true" aria-labelledby="confirm-title" tabIndex={-1}><h2 id="confirm-title">{title}</h2>{children}<div className="review-actions"><button className={`button ${danger ? 'button-danger' : 'button-primary'}`} type="button" disabled={disabled} onClick={onConfirm}>{confirmLabel}</button><button className="button button-quiet" type="button" disabled={disabled} onClick={onClose}>Cancel</button></div></section></div>;
 }
 
 function ReviewForm({ value, disabled, onChange }: { value: EditableProposal; disabled: boolean; onChange: (proposal: EditableProposal) => void }): ReactElement {

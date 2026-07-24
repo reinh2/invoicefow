@@ -1,6 +1,7 @@
 package invoices
 
 import (
+	"math"
 	"testing"
 
 	"github.com/reinhlord/invoiceflow/internal/extraction"
@@ -21,6 +22,34 @@ func TestDecimalToMinorV1UsesBankersRounding(t *testing.T) {
 	}
 	if _, err := DecimalToMinorV1("1,200.00", 2); err == nil {
 		t.Fatal("grouped decimal was accepted")
+	}
+}
+
+func TestNormalizeProposalWarnsInsteadOfWrappingAggregateMoney(t *testing.T) {
+	maximum := "92233720368547758.07"
+	oneCent := "0.01"
+	proposal := extraction.Proposal{
+		Currency:  stringPointer("USD"),
+		Subtotal:  stringPointer(maximum),
+		TaxAmount: stringPointer(oneCent),
+		Total:     stringPointer(maximum),
+		LineItems: []extraction.LineItemProposal{
+			{Total: stringPointer(maximum)},
+			{Total: stringPointer(oneCent)},
+		},
+	}
+	normalized, warnings := NormalizeProposal(proposal)
+	if normalized.Subtotal == nil || *normalized.Subtotal != math.MaxInt64 {
+		t.Fatalf("subtotal = %#v, want MaxInt64", normalized.Subtotal)
+	}
+	codes := map[string]bool{}
+	for _, item := range warnings {
+		codes[item.Code] = true
+	}
+	for _, code := range []string{"line_items_subtotal_overflow", "subtotal_tax_total_overflow"} {
+		if !codes[code] {
+			t.Fatalf("warning %q missing: %#v", code, warnings)
+		}
 	}
 }
 

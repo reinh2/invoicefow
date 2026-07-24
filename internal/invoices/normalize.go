@@ -2,6 +2,7 @@ package invoices
 
 import (
 	"fmt"
+	"math"
 	"math/big"
 	"strings"
 	"time"
@@ -62,22 +63,32 @@ func NormalizeProposal(proposal extraction.Proposal) (NormalizedProposal, []Warn
 	result.Total, warnings = normalizeMoney("total", proposal.Total, exponent, currencyOK, warnings)
 
 	var lineSum *int64
+	lineSumOverflow := false
 	allLineTotals := len(proposal.LineItems) > 0
 	for index, item := range proposal.LineItems {
 		line, lineWarnings := normalizeLine(index, item, exponent, currencyOK)
 		warnings = append(warnings, lineWarnings...)
 		result.LineItems = append(result.LineItems, line)
-		if line.Total != nil {
-			lineSum = addPointers(lineSum, line.Total)
+		if line.Total != nil && !lineSumOverflow {
+			var added bool
+			lineSum, added = addPointers(lineSum, line.Total)
+			if !added {
+				lineSumOverflow = true
+				warnings = append(warnings, warning("line_items_subtotal_overflow", "subtotal", "Line-item totals exceed the supported exact range."))
+			}
 		} else {
 			allLineTotals = false
 		}
 	}
-	if allLineTotals && lineSum != nil && result.Subtotal != nil && *lineSum != *result.Subtotal {
+	if allLineTotals && !lineSumOverflow && lineSum != nil && result.Subtotal != nil && *lineSum != *result.Subtotal {
 		warnings = append(warnings, warning("line_items_subtotal_mismatch", "subtotal", "Line-item totals do not equal subtotal."))
 	}
-	if result.Subtotal != nil && result.TaxAmount != nil && result.Total != nil && *result.Subtotal+*result.TaxAmount != *result.Total {
-		warnings = append(warnings, warning("subtotal_tax_total_mismatch", "total", "Subtotal plus tax does not equal total."))
+	if result.Subtotal != nil && result.TaxAmount != nil && result.Total != nil {
+		if sum, ok := checkedAdd(*result.Subtotal, *result.TaxAmount); !ok {
+			warnings = append(warnings, warning("subtotal_tax_total_overflow", "total", "Subtotal plus tax exceeds the supported exact range."))
+		} else if sum != *result.Total {
+			warnings = append(warnings, warning("subtotal_tax_total_mismatch", "total", "Subtotal plus tax does not equal total."))
+		}
 	}
 	return result, warnings
 }
@@ -149,11 +160,21 @@ func normalizeMoney(field string, value *string, exponent int, currencyOK bool, 
 func warning(code, field, message string) Warning {
 	return Warning{Code: code, Field: field, Message: message}
 }
-func addPointers(left, right *int64) *int64 {
+func addPointers(left, right *int64) (*int64, bool) {
 	if left == nil {
 		copy := *right
-		return &copy
+		return &copy, true
 	}
-	sum := *left + *right
-	return &sum
+	sum, ok := checkedAdd(*left, *right)
+	if !ok {
+		return nil, false
+	}
+	return &sum, true
+}
+
+func checkedAdd(left, right int64) (int64, bool) {
+	if right > 0 && left > math.MaxInt64-right || right < 0 && left < math.MinInt64-right {
+		return 0, false
+	}
+	return left + right, true
 }

@@ -35,9 +35,13 @@ curl --fail --silent --show-error "${base_url}/app" | grep -q '<div id="root">'
 curl --silent --show-error "${base_url}/api/v1/unknown" | grep -q '"code":"route_not_found"'
 ! curl --silent --show-error "${base_url}/assets/index-absent.js" | grep -q '<div id="root">'
 
-response="$(curl --fail --silent --show-error -F 'file=@testdata/fixture-aurora-stationery.pdf;type=application/pdf' "${base_url}/api/v1/documents")"
+response="$(curl --fail --silent --show-error -F 'file=@testdata/fixture-cedarline-services.pdf;type=application/pdf' "${base_url}/api/v1/documents")"
 document_id="$(printf '%s' "$response" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')"
 test -n "$document_id"
+
+duplicate_status="$(curl --silent --show-error -o "$tmp_dir/duplicate.json" -w '%{http_code}' -F 'file=@testdata/fixture-cedarline-services.pdf;type=application/pdf' "${base_url}/api/v1/documents")"
+test "$duplicate_status" = "409"
+grep -q '"code":"duplicate_document"' "$tmp_dir/duplicate.json"
 
 attempt=0
 while [ "$attempt" -lt 30 ]; do
@@ -51,16 +55,19 @@ done
 test "${status:-}" = "needs_review"
 
 snapshot="$(docker compose exec -T postgres psql -U invoiceflow -d invoiceflow -Atc "SELECT rounding_policy_version || ':' || total_minor::text FROM invoice_versions WHERE document_id='${document_id}'")"
-test "$snapshot" = "money-v1:8640"
+test "$snapshot" = "money-v1:29000"
 audit="$(docker compose exec -T postgres psql -U invoiceflow -d invoiceflow -Atc "SELECT count(*) FROM audit_events WHERE document_id='${document_id}' AND action='processing_completed'")"
 test "$audit" = "1"
 
 detail="$(curl --fail --silent --show-error "${base_url}/api/v1/documents/${document_id}")"
 printf '%s' "$detail" | grep -q '"status":"needs_review"'
+printf '%s' "$detail" | grep -q '"code":"subtotal_tax_total_mismatch"'
 curl --fail --silent --show-error "${base_url}/api/v1/documents/${document_id}/source" >/dev/null
 
-# Save human correction version 2
-curl --fail --silent --show-error -H 'Content-Type: application/json' -d '{"base_version":1,"proposal":{"supplier_name":"Aurora Stationery Co.","invoice_number":"AURORA-1042","issue_date":"2026-06-15","due_date":"2026-07-15","currency":"USD","subtotal":"80.00","tax_amount":"6.40","total":"86.40","line_items":[{"description":"A4 copy paper, 80 gsm (5 reams)","quantity":"5","unit_price":"6.00","tax_amount":"0.00","total":"30.00"},{"description":"Gel ink pens, box of 12","quantity":"3","unit_price":"8.00","tax_amount":"0.00","total":"24.00"},{"description":"Mesh desk organizer","quantity":"2","unit_price":"13.00","tax_amount":"0.00","total":"26.00"}]}}' "${base_url}/api/v1/documents/${document_id}/human-reviews" | grep -q '"version_number":2'
+# Version 2 corrects the printed total without mutating the warning version.
+curl --fail --silent --show-error -H 'Content-Type: application/json' -d '{"base_version":1,"proposal":{"supplier_name":"Cedarline Services LLC","supplier_email":"ar@cedarline.example","invoice_number":"CEDAR-3390","issue_date":"2026-06-20","due_date":"2026-07-20","currency":"USD","subtotal":"250.00","tax_amount":"47.50","total":"297.50","line_items":[{"description":"Managed hosting, monthly","quantity":"10","unit_price":"15.00","tax_amount":"0.00","total":"150.00"},{"description":"On-site support, hours","quantity":"4","unit_price":"25.00","tax_amount":"0.00","total":"100.00"}]}}' "${base_url}/api/v1/documents/${document_id}/human-reviews" | grep -q '"version_number":2'
+corrected_warnings="$(docker compose exec -T postgres psql -U invoiceflow -d invoiceflow -Atc "SELECT warnings::text FROM invoice_versions WHERE document_id='${document_id}' AND version_number=2")"
+test "$corrected_warnings" = "[]"
 
 versions="$(docker compose exec -T postgres psql -U invoiceflow -d invoiceflow -Atc "SELECT count(*) FROM invoice_versions WHERE document_id='${document_id}' AND source='human_review'")"
 test "$versions" = "1"
@@ -75,7 +82,7 @@ test "$approved_audit" = "1"
 
 # Stage 5: CSV Export
 curl --fail --silent --show-error "${base_url}/api/v1/documents/${document_id}/export/csv" -o "$tmp_dir/csv.first"
-grep -q "Aurora Stationery Co." "$tmp_dir/csv.first"
+grep -q "Cedarline Services LLC" "$tmp_dir/csv.first"
 curl --fail --silent --show-error -D "$tmp_dir/csv.headers" "${base_url}/api/v1/documents/${document_id}/export/csv" -o "$tmp_dir/csv.second"
 cmp "$tmp_dir/csv.first" "$tmp_dir/csv.second"
 grep -qi 'X-InvoiceFlow-CSV-Format: csv-v1' "$tmp_dir/csv.headers"
@@ -117,27 +124,42 @@ printf '%s' "$receiver_stats" | grep -q '"validated_count":1'
 printf '%s' "$receiver_stats" | grep -q '"idempotency_count":1'
 printf '%s' "$receiver_stats" | grep -q '"last_idempotency_key":"'"$export_key"'"'
 
-# Test the OCR path and the rejection flow on a 2nd fictional document: the
-# Meridian image only reaches its configured snapshot if Tesseract read the
-# embedded marker, so the snapshot assertion proves the OCR path end to end.
-doc2_res="$(curl --fail --silent --show-error -F 'file=@testdata/fixture-meridian-supplies.png;type=image/png' "${base_url}/api/v1/documents")"
-doc2_id="$(printf '%s' "$doc2_res" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')"
-test -n "$doc2_id"
+# The image OCR route must produce the configured proposal before a controlled
+# receiver outage exercises durable retry/dead-letter delivery.
+dead_res="$(curl --fail --silent --show-error -F 'file=@testdata/fixture-meridian-supplies.png;type=image/png' "${base_url}/api/v1/documents")"
+dead_id="$(printf '%s' "$dead_res" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')"
+test -n "$dead_id"
 
 attempt=0
 while [ "$attempt" -lt 30 ]; do
-  doc2_status="$(docker compose exec -T postgres psql -U invoiceflow -d invoiceflow -Atc "SELECT status FROM documents WHERE id='${doc2_id}'")"
-  if [ "$doc2_status" = "needs_review" ]; then
+  dead_status="$(docker compose exec -T postgres psql -U invoiceflow -d invoiceflow -Atc "SELECT status FROM documents WHERE id='${dead_id}'")"
+  if [ "$dead_status" = "needs_review" ]; then
     break
   fi
   attempt=$((attempt + 1))
   sleep 1
 done
+test "${dead_status:-}" = "needs_review"
+dead_snapshot="$(docker compose exec -T postgres psql -U invoiceflow -d invoiceflow -Atc "SELECT rounding_policy_version || ':' || total_minor::text || ':' || diagnostics::text FROM invoice_versions WHERE document_id='${dead_id}'")"
+test "$dead_snapshot" = "money-v1:6804:[]"
+curl --fail --silent --show-error -H 'Content-Type: application/json' -d '{"version_number":1,"confirm":true}' "${base_url}/api/v1/documents/${dead_id}/approve" >/dev/null
+docker compose stop receiver >/dev/null
+curl --fail --silent --show-error -H 'Content-Type: application/json' -X POST "${base_url}/api/v1/documents/${dead_id}/export/webhook" >/dev/null
+attempt=0
+while [ "$attempt" -lt 130 ]; do
+  dead_projection="$(docker compose exec -T postgres psql -U invoiceflow -d invoiceflow -Atc "SELECT e.status || ':' || e.attempts::text || ':' || d.status || ':' || (SELECT count(*)::text FROM audit_events a WHERE a.document_id=d.id AND a.action='export_dead_lettered') FROM exports e JOIN documents d ON d.id=e.document_id WHERE e.document_id='${dead_id}'")"
+  [ "$dead_projection" = "dead_letter:5:approved:1" ] && break
+  attempt=$((attempt + 1)); sleep 1
+done
+test "${dead_projection:-}" = "dead_letter:5:approved:1"
+
+doc2_res="$(curl --fail --silent --show-error -F 'file=@testdata/fixture-aurora-stationery.pdf;type=application/pdf' "${base_url}/api/v1/documents")"
+doc2_id="$(printf '%s' "$doc2_res" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')"
+attempt=0
+while [ "$attempt" -lt 30 ]; do doc2_status="$(docker compose exec -T postgres psql -U invoiceflow -d invoiceflow -Atc "SELECT status FROM documents WHERE id='${doc2_id}'")"; [ "$doc2_status" = "needs_review" ] && break; attempt=$((attempt + 1)); sleep 1; done
 test "${doc2_status:-}" = "needs_review"
-doc2_snapshot="$(docker compose exec -T postgres psql -U invoiceflow -d invoiceflow -Atc "SELECT rounding_policy_version || ':' || total_minor::text FROM invoice_versions WHERE document_id='${doc2_id}'")"
-test "$doc2_snapshot" = "money-v1:6804"
 curl --fail --silent --show-error -H 'Content-Type: application/json' -d '{"confirm":true}' "${base_url}/api/v1/documents/${doc2_id}/reject" >/dev/null
 rejected="$(docker compose exec -T postgres psql -U invoiceflow -d invoiceflow -Atc "SELECT status || ':' || (SELECT count(*)::text FROM audit_events WHERE document_id='${doc2_id}' AND action='document_rejected') FROM documents WHERE id='${doc2_id}'")"
 test "$rejected" = "rejected:1"
 
-printf '%s\n' 'Compose Stage 6 smoke passed.'
+printf '%s\n' 'Compose Stage 7 smoke passed.'

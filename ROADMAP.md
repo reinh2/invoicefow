@@ -20,7 +20,7 @@ InvoiceFlow превращает PDF/JPG/PNG-счёт в **структурир�
 | Ревью (оригинал рядом с данными, неизменяемые версии, отклонение, audit) | ✅ Готово |
 | Утверждение и экспорт (exact version, CSV, signed webhook, export jobs) | ✅ Готово |
 | Раздача фронтенда из API + честный landing со scroll-историей + media asset (этап 6) | ✅ Готово |
-| Release-пакет (фикстуры, скриншоты, demo script, финальные ревью, release gate) | 🔴 Не готов |
+| Release-пакет (фикстуры, скриншоты, demo script, финальные ревью, release gate) | ✅ Готово |
 
 ---
 
@@ -37,11 +37,11 @@ InvoiceFlow превращает PDF/JPG/PNG-счёт в **структурир�
 ### Этап 7 — воспроизводимый portfolio release
 
 - [x] **Три фикстуры** разных путей: чистый text-PDF, JPEG/PNG через OCR, документ с warning. Всё fictional и безопасно для публикации. *(Сделано на этапе 6: `fixture-aurora-stationery.pdf`, `fixture-meridian-supplies.png`, `fixture-cedarline-services.pdf`.)*
-- [ ] **Расширить Compose smoke** на failure paths: duplicate, warning/correction, retry/dead-letter. Сейчас smoke покрывает happy path + rejection.
-- [ ] **Скриншоты из реального приложения** и **demo script на 60–90 секунд**.
-- [ ] **Финальные ревью:** code, database, security, document-AI, frontend/accessibility, performance. Закрыть все high-severity или явно не выпускать релиз.
-- [ ] **Release gate с чистого окружения** без ручных правок БД и платных credentials (команды ниже).
-- [ ] **Привести `docs/PORTFOLIO_RELEASE_CHECKLIST.md` в соответствие с реальностью** — часть инженерных и security-пунктов уже выполнена, но не отмечена.
+- [x] **Расширить Compose smoke**: duplicate, warning/correction, OCR и retry/dead-letter.
+- [x] **Скриншоты из реального приложения** и **demo script на 60–90 секунд**.
+- [x] **Финальные ревью:** code, database, security, document-AI, frontend/accessibility, performance; domain/database highs fixed. No auth/authz is the explicit loopback-demo boundary.
+- [x] **Release gate** без ручных правок БД и платных credentials: Go, disposable PostgreSQL 17, Node frontend, clean Compose and isolated smoke passed 24 July 2026.
+- [x] **Checklist приведён в соответствие с фактическим gate.**
 - [x] English `README.md` — назначение, quick start, архитектура, demo flow, security model, честные ограничения. *(Сделано досрочно.)*
 
 ### Сквозные решения (небольшие, но нужны для публичного портфолио)
@@ -73,7 +73,7 @@ sh scripts/compose-smoke.sh
 ✅ intake → processing → extraction → human review/reject
 ✅ approve exact version → CSV / webhook jobs → export history
 ✅ Этап 6: честный product story + раздача UI из API + media asset
-🔴 Этап 7: reproducible portfolio release
+✅ Этап 7: reproducible portfolio release
    └─ После релиза: production hardening и расширения только по отдельным ADR
 ```
 

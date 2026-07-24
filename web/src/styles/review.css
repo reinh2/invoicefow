@@ -288,12 +288,27 @@
   line-height: 1.55;
 }
 
-.confirm-dialog {
+.confirm-overlay {
   position: fixed;
   z-index: 5;
-  right: max(var(--space-4), calc((100vw - var(--container)) / 2));
-  bottom: var(--space-5);
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: var(--space-4);
+}
+
+.confirm-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgb(3 9 16 / 0.72);
+}
+
+.confirm-dialog {
+  position: relative;
+  z-index: 1;
   width: min(460px, calc(100vw - var(--space-8)));
+  max-height: calc(100vh - (var(--space-4) * 2));
+  overflow: auto;
   padding: var(--space-5);
   border: 1px solid var(--amber);
   border-radius: var(--radius-md);
@@ -387,9 +402,11 @@
     flex: 1 1 100%;
   }
 
+  .confirm-overlay {
+    align-items: end;
+  }
+
   .confirm-dialog {
-    right: var(--space-4);
-    bottom: var(--space-4);
     width: calc(100vw - (var(--space-4) * 2));
   }
 }

@@ -51,8 +51,8 @@ export function LandingPage(): ReactElement {
           </div>
           <div className="hero-preview-data">
             <span className="hero-preview-heading">Proposal · version 1</span>
-            <span className="hero-preview-row"><em>Supplier</em>Fictional Office Goods</span>
-            <span className="hero-preview-row"><em>Invoice</em>OFFICE-001</span>
+            <span className="hero-preview-row"><em>Supplier</em>Orchard Office Supplies</span>
+            <span className="hero-preview-row"><em>Invoice</em>ORCHARD-001</span>
             <span className="hero-preview-row"><em>Total</em>24.00 USD</span>
             <span className="hero-preview-foot">Awaiting human review</span>
           </div>

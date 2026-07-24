@@ -54,6 +54,14 @@ The release checklist for this task is recorded in `docs/DEFINITION_OF_DONE.md` 
 
 Stage 6 was validated with `make fmt lint test`, the PostgreSQL integration suite (`make test-integration` against a throwaway database), `make frontend-test` (typecheck, 29 frontend tests, and the Vite build that bundles the media), and `sh scripts/compose-smoke.sh` on an isolated project/ports. The media was captured against a separate isolated Compose demo on `127.0.0.1:18081` seeded by `scripts/demo-seed.sh`, and the served landing page (video, poster, reduced-motion still) was confirmed in a real browser.
 
-## Exact next prompt
+## Stage 7 release result
 
-> Begin Stage 7: expand the Compose smoke onto the duplicate, warning/correction, and retry/dead-letter failure paths; add the demo script and real-application screenshots; run the final domain reviews; and bring `docs/PORTFOLIO_RELEASE_CHECKLIST.md` in line with reality.
+Stage 7 is complete. The isolated smoke now checks duplicate `409`, the
+Cedarline warning and immutable correction, Meridian image OCR, and a controlled
+webhook retry/dead-letter path before rejecting Aurora. Migration 0014 makes
+export idempotency and export-job pairing database invariants; money aggregation
+does not wrap `int64`. `docs/DEMO_SCRIPT.md` provides the 75-second walkthrough.
+
+The final Go, PostgreSQL integration, Node frontend, clean Compose, and isolated
+smoke gates passed on 24 July 2026. This remains a loopback fixed-actor demo:
+authentication, authorization, and production CSRF are not claimed.
