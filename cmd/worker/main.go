@@ -119,6 +119,13 @@ func main() {
 // server configuration. "fake" is the deterministic offline default; "openai"
 // is an opt-in live provider. The API key never leaves configuration here and
 // is not logged.
+//
+// The offline default is a chain: the fixture registry answers first, and the
+// heuristic reader runs only when no fixture matched. That keeps every
+// committed fixture's snapshot byte-identical while still showing real work on
+// a document the demo has never seen. The live provider is deliberately not
+// chained — a model that returns nothing is a provider result to inspect, not a
+// case for a regexp second opinion.
 func buildStructuredExtractor(config app.Config) (extraction.StructuredExtractor, error) {
 	if config.Extractor == "openai" {
 		return extraction.NewOpenAIStructuredExtractor(extraction.OpenAIOptions{
@@ -127,7 +134,11 @@ func buildStructuredExtractor(config app.Config) (extraction.StructuredExtractor
 			BaseURL: config.OpenAIBaseURL,
 		})
 	}
-	return extraction.NewFakeStructuredExtractor(defaultFakeFixtures())
+	fake, err := extraction.NewFakeStructuredExtractor(defaultFakeFixtures())
+	if err != nil {
+		return nil, err
+	}
+	return extraction.NewFallbackStructuredExtractor(fake, extraction.HeuristicStructuredExtractor{})
 }
 
 func ptr(value string) *string { return &value }

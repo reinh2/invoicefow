@@ -55,7 +55,12 @@ func (e PDFTextExtractor) ExtractText(ctx context.Context, document DocumentInpu
 	if pages > limits.MaxPages {
 		return TextExtractionResult{}, ErrTooManyPages
 	}
-	out, err := runBounded(ctx, e.pdfToTextPath(), []string{"-enc", "UTF-8", "-f", "1", "-l", strconv.Itoa(pages), path, "-"}, limits.MaxProcessOutputBytes)
+	// -layout preserves the physical row structure of the page. Without it
+	// Poppler emits column-major text, which tears an invoice table apart: every
+	// label lands on a different line from its amount, so a reader downstream
+	// cannot tell which number belongs to "Subtotal". The flag is still a fixed
+	// literal argument under the same output and timeout bounds.
+	out, err := runBounded(ctx, e.pdfToTextPath(), []string{"-enc", "UTF-8", "-layout", "-f", "1", "-l", strconv.Itoa(pages), path, "-"}, limits.MaxProcessOutputBytes)
 	if err != nil {
 		if errors.Is(err, ErrProcessOutputTooLarge) || errors.Is(err, context.DeadlineExceeded) {
 			return TextExtractionResult{}, err

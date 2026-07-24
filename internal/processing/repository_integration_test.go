@@ -354,7 +354,10 @@ func TestWorkerPersistsNormalizedExtractionAndCompletesLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	supplier, currency, subtotal, tax, total, quantity, price, lineTotal := "Fictional Vendor", "USD", "20.00", "4.00", "24.00", "2", "10.00", "20.00"
-	fake, err := extraction.NewFakeStructuredExtractor([]extraction.FakeFixture{{DocumentSHA256: fmt.Sprintf("%x", record.SHA256), Marker: "INVOICEFLOW_FIXTURE:WORKER-001", Proposal: extraction.Proposal{SupplierName: &supplier, Currency: &currency, Subtotal: &subtotal, TaxAmount: &tax, Total: &total, LineItems: []extraction.LineItemProposal{{Quantity: &quantity, UnitPrice: &price, Total: &lineTotal}}}}})
+	// Every required field is present so the assertion below stays a check that
+	// a consistent invoice produces *no* warnings at all.
+	invoiceNumber, issueDate := "WORKER-001", "2026-07-01"
+	fake, err := extraction.NewFakeStructuredExtractor([]extraction.FakeFixture{{DocumentSHA256: fmt.Sprintf("%x", record.SHA256), Marker: "INVOICEFLOW_FIXTURE:WORKER-001", Proposal: extraction.Proposal{SupplierName: &supplier, InvoiceNumber: &invoiceNumber, IssueDate: &issueDate, Currency: &currency, Subtotal: &subtotal, TaxAmount: &tax, Total: &total, LineItems: []extraction.LineItemProposal{{Quantity: &quantity, UnitPrice: &price, Total: &lineTotal}}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1026,5 +1029,90 @@ func TestExportWorkerDeadLettersPermanent4xxWithoutChangingApprovedDocument(t *t
 	}
 	if jobStatus != "dead_letter" || exportStatus != "dead_letter" || documentStatus != "approved" || jobAttempts != 1 || exportAttempts != 1 || jobNext != nil || exportNext != nil || jobError != "webhook delivery failed (permanent)" || exportError != "webhook delivery failed (permanent)" || deadLetterAudits != 1 {
 		t.Fatalf("permanent job=%q export=%q document=%q attempts=%d/%d next=%v/%v errors=%q/%q audits=%d", jobStatus, exportStatus, documentStatus, jobAttempts, exportAttempts, jobNext, exportNext, jobError, exportError, deadLetterAudits)
+	}
+}
+
+func TestListDocumentsPagesWithAStableKeysetCursor(t *testing.T) {
+	repo, pool, ctx := integrationRepository(t)
+
+	// Distinct created_at values so the newest-first ordering is unambiguous.
+	base := time.Now().UTC().Add(-time.Hour)
+	ids := make([]string, 0, 5)
+	for index := 0; index < 5; index++ {
+		record := integrationRecord(t, fmt.Sprintf("list-%d", index))
+		record.CreatedAt = base.Add(time.Duration(index) * time.Minute)
+		if err := repo.CreateQueuedDocument(ctx, record); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `UPDATE documents SET created_at=$2 WHERE id=$1`, record.DocumentID, record.CreatedAt); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, record.DocumentID)
+	}
+
+	first, err := repo.ListDocuments(ctx, 2, "")
+	if err != nil {
+		t.Fatalf("ListDocuments: %v", err)
+	}
+	if len(first.Documents) != 2 || first.NextCursor == "" {
+		t.Fatalf("first page = %d documents, cursor %q", len(first.Documents), first.NextCursor)
+	}
+	// Newest first: the last seeded document leads.
+	if first.Documents[0].ID != ids[4] || first.Documents[1].ID != ids[3] {
+		t.Errorf("first page order = %s, %s; want %s, %s", first.Documents[0].ID, first.Documents[1].ID, ids[4], ids[3])
+	}
+
+	// Inserting a newer document mid-paging must not shift the next page, which
+	// is exactly what offset pagination would get wrong.
+	newer := integrationRecord(t, "list-newer")
+	if err := repo.CreateQueuedDocument(ctx, newer); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := repo.ListDocuments(ctx, 2, first.NextCursor)
+	if err != nil {
+		t.Fatalf("second page: %v", err)
+	}
+	if len(second.Documents) != 2 || second.Documents[0].ID != ids[2] || second.Documents[1].ID != ids[1] {
+		t.Fatalf("second page = %+v; want %s then %s", second.Documents, ids[2], ids[1])
+	}
+
+	seen := map[string]bool{}
+	for _, document := range append(first.Documents, second.Documents...) {
+		if seen[document.ID] {
+			t.Errorf("document %s repeated across pages", document.ID)
+		}
+		seen[document.ID] = true
+	}
+
+	if _, err := repo.ListDocuments(ctx, 2, "not-a-cursor"); !errors.Is(err, ErrInvalidCursor) {
+		t.Errorf("foreign cursor error = %v, want ErrInvalidCursor", err)
+	}
+}
+
+func TestListDocumentsClampsPageSizeAndExposesNoServerIdentifiers(t *testing.T) {
+	repo, _, ctx := integrationRepository(t)
+	record := integrationRecord(t, "list-bounds")
+	if err := repo.CreateQueuedDocument(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+
+	// A caller cannot request an unbounded scan.
+	page, err := repo.ListDocuments(ctx, 100_000, "")
+	if err != nil {
+		t.Fatalf("ListDocuments: %v", err)
+	}
+	if len(page.Documents) > maxDocumentPageSize {
+		t.Errorf("page size = %d, want at most %d", len(page.Documents), maxDocumentPageSize)
+	}
+
+	encoded, err := json.Marshal(page)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{record.ObjectKey, record.ObjectID, "sha256", "object_key"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Errorf("list projection leaked %q: %s", forbidden, encoded)
+		}
 	}
 }

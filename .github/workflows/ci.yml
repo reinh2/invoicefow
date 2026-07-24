@@ -20,7 +20,7 @@ jobs:
           --health-cmd "pg_isready -U invoiceflow -d invoiceflow"
           --health-interval 2s --health-timeout 3s --health-retries 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26.x'
@@ -40,13 +40,17 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
           node-version: '26.x'
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci
+      # Formatting and lint run before the slower gates so a style-only failure
+      # is reported in seconds rather than after a full build.
+      - run: npm run format:check
+      - run: npm run lint
       - run: npm run typecheck
       - run: npm run test
       - run: npm run build

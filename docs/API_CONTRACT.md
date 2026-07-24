@@ -60,6 +60,7 @@ The SHA-256 hash, original filename, storage key, and filesystem path are not re
 | --- | --- | --- |
 | `400` | `invalid_request`, `invalid_file` | Multipart shape, request encoding, metadata, signature, PDF end marker, or image decoding was invalid. |
 | `409` | `duplicate_document` | The SHA-256 was already accepted; no existing document identity is disclosed. |
+| `429` | `rate_limited` | Only when `UPLOAD_RATE_PER_MINUTE` is configured (off by default). Checked before the body is read, and carries `Retry-After` in seconds. The client is identified by transport peer address; `X-Forwarded-For` is deliberately ignored. |
 | `413` | `file_too_large` | The request or file exceeded an intake limit. |
 | `500` | `storage_error`, `internal_error` | Intake could not complete. |
 
@@ -86,6 +87,55 @@ Returns one document's read-only review representation. It includes the document
 ### `GET /api/v1/documents/{document_id}/source`
 
 Streams the server-owned original using its stored PDF/JPEG/PNG media type for the split review screen. It uses `Content-Disposition: inline`, `Cache-Control: no-store`, and `X-Content-Type-Options: nosniff`; no storage or source identity metadata is returned.
+
+### `GET /api/v1/config`
+
+Returns the presentation flags the browser needs. The route is unauthenticated,
+so its payload is deliberately one boolean: it must never carry a secret, a
+destination, a path, or anything that grants authority.
+
+**Success — `200 OK`**
+
+```json
+{ "public_demo": false }
+```
+
+`public_demo` is `true` only when the server is configured with
+`PUBLIC_DEMO=true` (ADR-016). It changes what the interface says, never what any
+caller is permitted to do.
+
+### `GET /api/v1/documents`
+
+Returns one bounded page of documents, newest first. Read-only: it changes no
+state.
+
+| Query parameter | Meaning |
+| --- | --- |
+| `limit` | Optional page size. Must be a positive integer; the server clamps it to at most 100 and defaults to 20. |
+| `cursor` | Optional opaque cursor from a previous response's `next_cursor`. Clients must pass back exactly what they received and must not construct one. |
+
+Pagination is keyset, not offset: the cursor carries the `(created_at, id)` of
+the last row returned, so a document inserted while a client pages cannot make a
+row repeat or disappear. `next_cursor` is absent on the last page.
+
+Each row is a presentation-safe summary of the document's newest version, which
+is a proposal under review and not authoritative financial data. The SHA-256,
+stored-object id, storage key, filesystem path, and internal version UUID are
+never returned.
+
+**Success — `200 OK`**
+
+```json
+{"documents":[{"id":"opaque UUID","status":"needs_review","created_at":"2026-07-23T12:34:56Z","updated_at":"2026-07-23T12:35:10Z","supplier_name":"Northwind Trading GmbH","invoice_number":"NW-2291","currency":"EUR","total_minor":8449,"version_number":1}],"next_cursor":"opaque cursor"}
+```
+
+`total_minor` is exact integer minor units under the `money-v1` policy and is
+absent when the version has no total. `supplier_name`, `invoice_number`,
+`currency`, and `version_number` are absent when unknown.
+
+| Status | Implemented codes | Meaning |
+| --- | --- | --- |
+| `400` | `invalid_pagination` | `limit` was not a positive integer, or `cursor` was not one this server issued. |
 
 ### `POST /api/v1/documents/{document_id}/human-reviews`
 

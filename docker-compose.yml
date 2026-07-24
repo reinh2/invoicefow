@@ -25,6 +25,10 @@ services:
       WEBHOOK_URL: http://receiver:8090/webhook
       WEBHOOK_MODE: controlled
       WEBHOOK_SECRET: local-demo-webhook-secret
+      # Public-demo settings (ADR-016). Both default to off, so the local demo
+      # is unchanged; see docs/DEPLOYMENT.md before turning them on.
+      PUBLIC_DEMO: ${PUBLIC_DEMO:-false}
+      UPLOAD_RATE_PER_MINUTE: ${UPLOAD_RATE_PER_MINUTE:-0}
     depends_on:
       postgres:
         condition: service_healthy

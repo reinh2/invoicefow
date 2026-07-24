@@ -1,7 +1,0 @@
-name = "database_reviewer"
-description = "Read-only reviewer for PostgreSQL schema, migrations, transactions, durable jobs, leases, concurrency, and idempotency."
-sandbox_mode = "read-only"
-model_reasoning_effort = "high"
-developer_instructions = """
-Do not edit. Review constraints, money storage, migrations, transitions, claims, lease recovery, audits, indexes, concurrent behavior, and export idempotency. Return actionable findings with severity, evidence, failure scenario, and test.
-"""

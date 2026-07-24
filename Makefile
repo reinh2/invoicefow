@@ -15,7 +15,7 @@ test-integration:
 	go test -tags=integration ./...
 
 frontend-test:
-	cd web && npm run typecheck && npm run test && npm run build
+	cd web && npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build
 
 # build-go needs no Node toolchain, so a Go-only environment can use it. build
 # keeps its full meaning for a local release gate.
@@ -69,7 +69,9 @@ smoke-compose:
 	docker compose up --build --wait
 	sh scripts/compose-smoke.sh
 
+# Local-only: validates the coding-agent harness in .internal/, which is not
+# part of the published repository. Deliberately excluded from `check`.
 agent-pack:
-	python3 scripts/check-agent-pack.py
+	python3 .internal/check-agent-pack.py
 
-check: fmt lint test test-integration frontend-test build agent-pack
+check: fmt lint test test-integration frontend-test build

@@ -1,6 +1,6 @@
 .upload-workspace {
   display: grid;
-  grid-template-columns: minmax(260px, .85fr) minmax(0, 1.15fr);
+  grid-template-columns: minmax(260px, 0.85fr) minmax(0, 1.15fr);
   min-height: 420px;
   overflow: hidden;
   border: 1px solid var(--line);
@@ -19,16 +19,20 @@
 }
 
 .paper-panel span {
-  font-size: .75rem;
+  font-size: 0.75rem;
   font-weight: 700;
-  letter-spacing: .08em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  opacity: .6;
+  opacity: 0.6;
 }
 
 .paper-lines {
   height: 250px;
-  background: repeating-linear-gradient(to bottom, transparent 0 24px, rgb(39 35 31 / .12) 24px 25px);
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0 24px,
+    rgb(39 35 31 / 0.12) 24px 25px
+  );
 }
 
 .workspace-copy {
@@ -52,18 +56,18 @@
   padding: var(--space-5);
   border: 1px dashed var(--blue);
   border-radius: var(--radius-md);
-  background: rgb(102 173 255 / .08);
+  background: rgb(102 173 255 / 0.08);
   color: var(--text);
   cursor: pointer;
 }
 
 .upload-dropzone:hover {
-  background: rgb(102 173 255 / .14);
+  background: rgb(102 173 255 / 0.14);
 }
 
 .upload-dropzone:has(.upload-input:disabled) {
   cursor: wait;
-  opacity: .72;
+  opacity: 0.72;
 }
 
 .upload-dropzone:has(.upload-input:focus-visible) {
@@ -77,7 +81,7 @@
 
 .upload-dropzone-hint {
   color: var(--muted);
-  font-size: .875rem;
+  font-size: 0.875rem;
   line-height: 1.45;
 }
 
@@ -114,7 +118,7 @@
 
 .field-note {
   margin-top: var(--space-3);
-  font-size: .875rem;
+  font-size: 0.875rem;
 }
 
 @media (max-width: 720px) {
@@ -129,4 +133,57 @@
   .paper-lines {
     height: 120px;
   }
+}
+
+/* Document list
+   Reachability: before this list a document was findable only by its URL. */
+
+.document-list {
+  display: grid;
+  gap: var(--space-3);
+  justify-items: start;
+  margin-top: var(--space-5);
+}
+
+.document-list h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+/* The table scrolls inside its own container so a narrow viewport never makes
+   the whole page scroll sideways. */
+.document-table {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.document-table th,
+.document-table td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.document-table thead th {
+  color: var(--muted);
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.document-table tbody th {
+  font-weight: 600;
+}
+
+.document-table tbody th a {
+  color: var(--text);
+}
+
+.document-total {
+  font-variant-numeric: tabular-nums;
 }

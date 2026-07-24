@@ -24,5 +24,16 @@ export function RootApp(): ReactElement {
     window.history.pushState({}, '', `/app/documents/${documentID}`);
     setRoute({ kind: 'review', documentID });
   };
-  return <RouteErrorBoundary key={route.kind === 'review' ? route.documentID : route.kind}>{route.kind === 'landing' ? <LandingPage /> : <AppShell documentID={route.kind === 'review' ? route.documentID : undefined} onOpenDocument={openDocument} />}</RouteErrorBoundary>;
+  return (
+    <RouteErrorBoundary key={route.kind === 'review' ? route.documentID : route.kind}>
+      {route.kind === 'landing' ? (
+        <LandingPage />
+      ) : (
+        <AppShell
+          documentID={route.kind === 'review' ? route.documentID : undefined}
+          onOpenDocument={openDocument}
+        />
+      )}
+    </RouteErrorBoundary>
+  );
 }

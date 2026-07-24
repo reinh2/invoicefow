@@ -28,7 +28,7 @@
   padding: var(--space-5) 0;
   border-top: 1px solid var(--line);
   color: var(--muted);
-  font-size: .875rem;
+  font-size: 0.875rem;
 }
 
 .wordmark {
@@ -36,7 +36,7 @@
   align-items: center;
   gap: var(--space-2);
   font-weight: 700;
-  letter-spacing: -.02em;
+  letter-spacing: -0.02em;
   text-decoration: none;
 }
 
@@ -70,22 +70,22 @@ h1 {
   max-width: 15ch;
   margin-bottom: var(--space-5);
   font-size: clamp(2.6rem, 6.2vw, 5.5rem);
-  line-height: .98;
-  letter-spacing: -.06em;
+  line-height: 0.98;
+  letter-spacing: -0.06em;
 }
 
 h2 {
   font-size: clamp(1.5rem, 3vw, 2.3rem);
   line-height: 1.1;
-  letter-spacing: -.04em;
+  letter-spacing: -0.04em;
 }
 
 .eyebrow {
   margin: 0 0 var(--space-3);
   color: var(--blue);
-  font-size: .75rem;
+  font-size: 0.75rem;
   font-weight: 700;
-  letter-spacing: .1em;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
 }
 
@@ -126,7 +126,7 @@ h2 {
 }
 
 .button-primary:disabled {
-  opacity: .48;
+  opacity: 0.48;
 }
 
 .button-quiet {
@@ -141,7 +141,7 @@ h2 {
   padding: 5px 9px;
   border: 1px solid currentColor;
   border-radius: 999px;
-  font-size: .75rem;
+  font-size: 0.75rem;
   font-weight: 700;
 }
 
@@ -220,4 +220,24 @@ h2 {
   .page-heading {
     flex-direction: column;
   }
+}
+
+/* Public demo notice
+   Shown only when the server reports PUBLIC_DEMO; a local demo never sees it. */
+
+.public-demo-notice {
+  margin: 0 auto;
+  padding: var(--space-3) var(--space-4);
+  max-width: var(--measure-wide, 1180px);
+  border: 1px solid var(--amber);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--amber) 12%, transparent);
+  color: var(--text);
+  font-size: 0.9rem;
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+
+.public-demo-notice strong {
+  color: var(--amber);
 }

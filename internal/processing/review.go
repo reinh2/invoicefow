@@ -3,6 +3,7 @@ package processing
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -153,6 +154,163 @@ type ReviewDocument struct {
 }
 
 type SourceDocument struct{ ObjectKey, MediaType string }
+
+// DocumentSummary is the presentation-safe row of a document list. It carries
+// no storage key, filesystem path, SHA-256, object id, or internal version id —
+// only what an operator needs to recognize a document and open it.
+type DocumentSummary struct {
+	ID            string    `json:"id"`
+	Status        string    `json:"status"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+	SupplierName  string    `json:"supplier_name,omitempty"`
+	InvoiceNumber string    `json:"invoice_number,omitempty"`
+	Currency      string    `json:"currency,omitempty"`
+	TotalMinor    *int64    `json:"total_minor,omitempty"`
+	VersionNumber *int      `json:"version_number,omitempty"`
+}
+
+// DocumentPage is one bounded page of the document list. NextCursor is empty
+// when the last page has been reached.
+type DocumentPage struct {
+	Documents  []DocumentSummary `json:"documents"`
+	NextCursor string            `json:"next_cursor,omitempty"`
+}
+
+const (
+	defaultDocumentPageSize = 20
+	maxDocumentPageSize     = 100
+)
+
+// ErrInvalidCursor means a list cursor was not one this server issued.
+var ErrInvalidCursor = errors.New("invalid pagination cursor")
+
+// ListDocuments returns one page of documents, newest first.
+//
+// Pagination is keyset rather than offset: the cursor carries the (created_at,
+// id) of the last row returned, so inserting a document while an operator pages
+// through the list cannot make a row repeat or disappear. The page size is
+// clamped server-side; a client cannot ask for an unbounded scan.
+//
+// The summary values come from the document's newest version, which is a
+// proposal under review, not authoritative financial data.
+func (r *Repository) ListDocuments(ctx context.Context, pageSize int, cursor string) (DocumentPage, error) {
+	if pageSize <= 0 {
+		pageSize = defaultDocumentPageSize
+	}
+	if pageSize > maxDocumentPageSize {
+		pageSize = maxDocumentPageSize
+	}
+	cursorTime, cursorID, err := decodeDocumentCursor(cursor)
+	if err != nil {
+		return DocumentPage{}, err
+	}
+
+	// One extra row is requested purely to learn whether another page exists,
+	// and is never returned to the client.
+	rows, err := r.pool.Query(ctx, `
+SELECT d.id, d.status, d.created_at, d.updated_at,
+       v.version_number, v.currency, v.total_minor,
+       v.normalized->>'supplier_name', v.normalized->>'invoice_number'
+FROM documents d
+LEFT JOIN LATERAL (
+    SELECT version_number, currency, total_minor, normalized
+    FROM invoice_versions
+    WHERE document_id = d.id
+    ORDER BY version_number DESC
+    LIMIT 1
+) v ON true
+WHERE ($1::timestamptz IS NULL OR (d.created_at, d.id) < ($1::timestamptz, $2::uuid))
+ORDER BY d.created_at DESC, d.id DESC
+LIMIT $3`, cursorTime, cursorID, pageSize+1)
+	if err != nil {
+		return DocumentPage{}, err
+	}
+	defer rows.Close()
+
+	page := DocumentPage{Documents: make([]DocumentSummary, 0, pageSize)}
+	for rows.Next() {
+		var summary DocumentSummary
+		var versionNumber *int
+		var currency, supplier, invoiceNumber *string
+		var totalMinor *int64
+		if err := rows.Scan(&summary.ID, &summary.Status, &summary.CreatedAt, &summary.UpdatedAt,
+			&versionNumber, &currency, &totalMinor, &supplier, &invoiceNumber); err != nil {
+			return DocumentPage{}, err
+		}
+		summary.VersionNumber = versionNumber
+		summary.TotalMinor = totalMinor
+		summary.Currency = stringValue(currency)
+		summary.SupplierName = stringValue(supplier)
+		summary.InvoiceNumber = stringValue(invoiceNumber)
+		page.Documents = append(page.Documents, summary)
+	}
+	if err := rows.Err(); err != nil {
+		return DocumentPage{}, err
+	}
+
+	if len(page.Documents) > pageSize {
+		last := page.Documents[pageSize-1]
+		page.Documents = page.Documents[:pageSize]
+		page.NextCursor = encodeDocumentCursor(last.CreatedAt, last.ID)
+	}
+	return page, nil
+}
+
+// validUUID accepts only the canonical lowercase UUID text form, so a cursor
+// cannot smuggle arbitrary text into a parameterized comparison.
+func validUUID(value string) bool {
+	if len(value) != 36 {
+		return false
+	}
+	for index, r := range value {
+		if index == 8 || index == 13 || index == 18 || index == 23 {
+			if r != '-' {
+				return false
+			}
+			continue
+		}
+		if !(r >= '0' && r <= '9') && !(r >= 'a' && r <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func stringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+// encodeDocumentCursor produces an opaque cursor. It is deliberately not a
+// client-meaningful value: callers must pass back exactly what they received.
+func encodeDocumentCursor(createdAt time.Time, id string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(createdAt.UTC().Format(time.RFC3339Nano) + "|" + id))
+}
+
+// decodeDocumentCursor accepts only a cursor this server could have issued. A
+// malformed cursor is a client error, never a silent fall back to the first
+// page, which would otherwise loop a paging client forever.
+func decodeDocumentCursor(cursor string) (*time.Time, *string, error) {
+	if cursor == "" {
+		return nil, nil, nil
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(cursor)
+	if err != nil {
+		return nil, nil, ErrInvalidCursor
+	}
+	timestamp, id, found := strings.Cut(string(raw), "|")
+	if !found || !validUUID(id) {
+		return nil, nil, ErrInvalidCursor
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, timestamp)
+	if err != nil {
+		return nil, nil, ErrInvalidCursor
+	}
+	return &parsed, &id, nil
+}
 
 // GetReviewDocument returns a bounded, presentation-safe view. Server storage
 // keys and hashes remain internal and source bytes require a separate stream.

@@ -10,8 +10,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/reinhlord/invoiceflow/internal/processing"
+	"github.com/reinhlord/invoiceflow/internal/ratelimit"
 	"github.com/reinhlord/invoiceflow/internal/webui"
 )
 
@@ -36,10 +38,18 @@ func TestHealthAndReadiness(t *testing.T) {
 }
 
 type fakeReview struct {
-	detail   processing.ReviewDocument
-	err      error
-	saved    bool
-	rejected bool
+	detail       processing.ReviewDocument
+	page         processing.DocumentPage
+	err          error
+	saved        bool
+	rejected     bool
+	listPageSize int
+	listCursor   string
+}
+
+func (f *fakeReview) ListDocuments(_ context.Context, pageSize int, cursor string) (processing.DocumentPage, error) {
+	f.listPageSize, f.listCursor = pageSize, cursor
+	return f.page, f.err
 }
 
 func (f *fakeReview) GetReviewDocument(context.Context, string) (processing.ReviewDocument, error) {
@@ -261,5 +271,156 @@ func TestUnconfiguredBundleLeavesTheAPIWithoutStaticRoutes(t *testing.T) {
 	}
 	if strings.Contains(recorder.Body.String(), "<!doctype html>") {
 		t.Fatal("an API-only process served an application shell")
+	}
+}
+
+func TestListDocumentsReturnsBoundedPage(t *testing.T) {
+	review := &fakeReview{page: processing.DocumentPage{
+		Documents:  []processing.DocumentSummary{{ID: "0d0c2342-2486-4f10-a858-e75bc763f3e4", Status: "needs_review", SupplierName: "Vendor"}},
+		NextCursor: "abc",
+	}}
+	handler := newHandlerWithDependencies(apiDependencies{db: fakePinger{}, review: review})
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/documents?limit=5&cursor=abc", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", recorder.Code)
+	}
+	if review.listPageSize != 5 || review.listCursor != "abc" {
+		t.Errorf("pagination passed through as (%d, %q), want (5, \"abc\")", review.listPageSize, review.listCursor)
+	}
+	if recorder.Header().Get("Cache-Control") != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", recorder.Header().Get("Cache-Control"))
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, "needs_review") || !strings.Contains(body, "next_cursor") {
+		t.Errorf("body = %s", body)
+	}
+	// A list must never leak server-owned identifiers.
+	for _, forbidden := range []string{"sha256", "object_key", "objects/", "approved_version_id"} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("list response leaked %q: %s", forbidden, body)
+		}
+	}
+}
+
+func TestListDocumentsRejectsInvalidPagination(t *testing.T) {
+	handler := newHandlerWithDependencies(apiDependencies{db: fakePinger{}, review: &fakeReview{}})
+
+	for _, query := range []string{"?limit=0", "?limit=-3", "?limit=many"} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/documents"+query, nil))
+		if recorder.Code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400", query, recorder.Code)
+		}
+	}
+}
+
+func TestListDocumentsRejectsForeignCursor(t *testing.T) {
+	handler := newHandlerWithDependencies(apiDependencies{db: fakePinger{}, review: &fakeReview{err: processing.ErrInvalidCursor}})
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/documents?cursor=not-a-cursor", nil))
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), "invalid_pagination") {
+		t.Errorf("body = %s", recorder.Body.String())
+	}
+}
+
+func rateLimitedHandler(t *testing.T) http.Handler {
+	t.Helper()
+	return newHandlerWithDependencies(apiDependencies{
+		db: fakePinger{}, intake: &fakeIntake{}, storage: &memoryStorage{}, actor: "local-demo",
+		tempDir: t.TempDir(), uploadLimiter: ratelimit.New(1, time.Minute),
+	})
+}
+
+func uploadFrom(t *testing.T, handler http.Handler, remoteAddr, forwardedFor string) *httptest.ResponseRecorder {
+	t.Helper()
+	request := uploadRequest(t)
+	request.RemoteAddr = remoteAddr
+	if forwardedFor != "" {
+		request.Header.Set("X-Forwarded-For", forwardedFor)
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	return recorder
+}
+
+func TestUploadRateLimitRefusesRepeatedUploads(t *testing.T) {
+	handler := rateLimitedHandler(t)
+
+	if first := uploadFrom(t, handler, "203.0.113.7:54321", ""); first.Code != http.StatusCreated {
+		t.Fatalf("first upload = %d %s", first.Code, first.Body.String())
+	}
+
+	second := uploadFrom(t, handler, "203.0.113.7:54322", "")
+	if second.Code != http.StatusTooManyRequests {
+		t.Fatalf("second upload = %d, want 429", second.Code)
+	}
+	if !strings.Contains(second.Body.String(), "rate_limited") {
+		t.Errorf("body = %s", second.Body.String())
+	}
+	if second.Header().Get("Retry-After") == "" {
+		t.Error("a 429 must tell the caller when to retry")
+	}
+
+	// A different address keeps its own allowance.
+	if other := uploadFrom(t, handler, "198.51.100.4:40000", ""); other.Code == http.StatusTooManyRequests {
+		t.Error("one client's burst consumed another client's allowance")
+	}
+}
+
+func TestUploadRateLimitIgnoresForwardedForHeader(t *testing.T) {
+	handler := rateLimitedHandler(t)
+
+	if first := uploadFrom(t, handler, "203.0.113.9:1111", "10.0.0.1"); first.Code != http.StatusCreated {
+		t.Fatalf("first upload = %d", first.Code)
+	}
+	// Trusting the header would let one caller mint a fresh allowance per
+	// request simply by changing it.
+	second := uploadFrom(t, handler, "203.0.113.9:2222", "10.0.0.2")
+	if second.Code != http.StatusTooManyRequests {
+		t.Errorf("second upload = %d, want 429 despite a different X-Forwarded-For", second.Code)
+	}
+}
+
+func TestUploadIsUnlimitedByDefault(t *testing.T) {
+	handler := newHandlerWithDependencies(apiDependencies{
+		db: fakePinger{}, intake: &fakeIntake{}, storage: &memoryStorage{},
+		actor: "local-demo", tempDir: t.TempDir(),
+	})
+	// The local demo must behave exactly as before: no limiter configured.
+	for attempt := 0; attempt < 5; attempt++ {
+		if recorder := uploadFrom(t, handler, "203.0.113.9:1111", ""); recorder.Code != http.StatusCreated {
+			t.Fatalf("upload %d = %d, want 201 with limiting disabled", attempt, recorder.Code)
+		}
+	}
+}
+
+func TestClientConfigExposesOnlyPresentationFlags(t *testing.T) {
+	for _, publicDemo := range []bool{true, false} {
+		handler := newHandlerWithDependencies(apiDependencies{db: fakePinger{}, publicDemo: publicDemo})
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/config", nil))
+
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status = %d", recorder.Code)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload["public_demo"] != publicDemo {
+			t.Errorf("public_demo = %v, want %v", payload["public_demo"], publicDemo)
+		}
+		// The route is unauthenticated, so its payload must stay a single flag.
+		if len(payload) != 1 {
+			t.Errorf("config exposed more than the presentation flag: %v", payload)
+		}
 	}
 }

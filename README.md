@@ -101,7 +101,8 @@ Document states: `uploaded` → `queued` → `processing` → `needs_review` →
 - **Durable work, not an in-memory queue.** Processing and export are PostgreSQL jobs with lease tokens, recorded attempts, expired-lease recovery, bounded retries, and dead-letter states. Restarting a worker never loses queued work. Jobs are claimed with `FOR UPDATE SKIP LOCKED`.
 - **Exact money.** Amounts are integer minor units with an explicit currency, under a named rounding policy (`money-v1`) stored on every snapshot. No binary floating point ever touches an amount; aggregation cannot silently wrap `int64`.
 - **Immutability by construction.** Invoice versions and audit events reject `UPDATE`/`DELETE` at the database level. A correction writes a *new* version; approval targets one exact version number; export reads only the approved foreign key and is idempotent (byte-identical CSV on every repeat).
-- **The model is behind a boundary.** The structured extractor sits behind an `Extractor` interface; the default is a deterministic offline fake. Provider output is decoded as strict JSON with unknown fields rejected, then fully re-validated and normalized server-side. It cannot control identity, storage, status, approval, or secrets.
+- **The model is behind a boundary.** The structured extractor sits behind an `Extractor` interface. The default is offline and deterministic: a fixture registry answers first, and a regex reader runs only when no fixture matched, so an unseen invoice still produces real candidates instead of an empty form. Provider output is decoded as strict JSON with unknown fields rejected, then fully re-validated and normalized server-side. It cannot control identity, storage, status, approval, or secrets.
+- **Evidence is proven, never asserted.** An adapter may attach a source page and excerpt; the server persists it only after checking the excerpt literally occurs in that page's bounded text. The offline reader quotes the exact line it read each value from, so the review screen shows provenance that was verified rather than claimed.
 - **Hardened I/O.** Extraction tools (Poppler, Tesseract) are invoked as fixed absolute paths with literal argument arrays, under process timeouts and output caps — no filename is ever interpolated into a shell string. The static web bundle is served from memory by exact key lookup, so path traversal and symlink escape are *structurally* impossible, and every response carries a fixed first-party CSP with no `unsafe-inline`/`unsafe-eval`.
 - **Safe webhooks.** Destinations and secrets are process configuration, never request data. Strict mode is HTTPS-only, redirect-free, port 443, rejects private/reserved addresses with DNS-answer validation, and signs canonical bytes with HMAC-SHA256. Delivery is at-least-once; receivers deduplicate by idempotency key.
 
@@ -115,6 +116,7 @@ make test-integration # PostgreSQL integration tests, needs DATABASE_URL
 make frontend-test    # typecheck, Vitest, production build
 make build            # both binaries + the web bundle
 make smoke-compose    # full Compose smoke: upload → … → export → audit
+# frontend-test also runs Prettier --check and ESLint before the build.
 ```
 
 Local dev without Docker: a reachable PostgreSQL, then `go run ./cmd/api`, `go run ./cmd/worker`, and `npm run dev` in `web/` (Vite proxies `/api`). Configuration is environment-only — see [`.env.example`](.env.example). `WEB_DIR` is optional; empty means the API serves JSON only.
@@ -130,7 +132,7 @@ CI runs the Go, integration, and frontend suites on every push and pull request.
 
 ### Documentation
 
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · [`docs/API_CONTRACT.md`](docs/API_CONTRACT.md) · [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md) · [`docs/DECISIONS.md`](docs/DECISIONS.md) (ADR log) · [`docs/DEMO_SCRIPT.md`](docs/DEMO_SCRIPT.md)
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · [`docs/API_CONTRACT.md`](docs/API_CONTRACT.md) · [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md) · [`docs/DECISIONS.md`](docs/DECISIONS.md) (ADR log) · [`docs/DEMO_SCRIPT.md`](docs/DEMO_SCRIPT.md) · [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)
 
 ---
 
@@ -200,7 +202,8 @@ React + Vite (web/)              Go API (cmd/api)
 - **Надёжная очередь, а не in-memory.** Обработка и экспорт — это задачи в PostgreSQL с lease-токенами, учётом попыток, восстановлением просроченных lease, ограниченными ретраями и dead-letter состояниями. Перезапуск воркера не теряет работу. Задачи захватываются через `FOR UPDATE SKIP LOCKED`.
 - **Точные деньги.** Суммы — целые минорные единицы с явной валютой, под именованной политикой округления (`money-v1`), сохранённой в каждом снимке. Никакой двоичной плавающей точки; агрегация не может тихо переполнить `int64`.
 - **Неизменяемость по построению.** Версии счёта и события аудита отклоняют `UPDATE`/`DELETE` на уровне БД. Правка создаёт **новую** версию; утверждение указывает на один точный номер версии; экспорт читает только утверждённый внешний ключ и идемпотентен (побайтово идентичный CSV при повторах).
-- **Модель за границей.** Структурированный экстрактор скрыт за интерфейсом `Extractor`; по умолчанию — детерминированная офлайн-заглушка. Вывод провайдера декодируется как строгий JSON с отклонением неизвестных полей, затем полностью перепроверяется и нормализуется на сервере. Он не управляет идентичностью, хранилищем, статусом, утверждением или секретами.
+- **Модель за границей.** Структурированный экстрактор скрыт за интерфейсом `Extractor`. По умолчанию путь офлайновый и детерминированный: сначала отвечает реестр фикстур, а regex-ридер запускается только если ни одна фикстура не совпала — поэтому незнакомый счёт даёт реальные кандидаты, а не пустую форму. Вывод провайдера декодируется как строгий JSON с отклонением неизвестных полей, затем полностью перепроверяется и нормализуется на сервере. Он не управляет идентичностью, хранилищем, статусом, утверждением или секретами.
+- **Доказательства проверяются, а не декларируются.** Адаптер может приложить страницу и цитату источника; сервер сохранит их только после проверки, что цитата буквально встречается в тексте этой страницы. Офлайн-ридер цитирует ту самую строку, из которой прочитал значение, — на экране ревью видно проверенное происхождение, а не заявленное.
 - **Защищённый ввод-вывод.** Инструменты извлечения (Poppler, Tesseract) вызываются по фиксированным абсолютным путям с литеральными массивами аргументов, под таймаутами и лимитами вывода — имя файла никогда не попадает в shell-строку. Статический бандл отдаётся из памяти по точному ключу, поэтому обход путей и symlink-escape **структурно невозможны**, а каждый ответ несёт фиксированный CSP без `unsafe-inline`/`unsafe-eval`.
 - **Безопасные вебхуки.** Адрес и секрет — это конфигурация процесса, а не данные запроса. Строгий режим: только HTTPS, без редиректов, порт 443, отклонение приватных/зарезервированных адресов с валидацией DNS-ответа, подпись канонических байтов через HMAC-SHA256. Доставка — at-least-once; получатель дедуплицирует по ключу идемпотентности.
 
@@ -214,6 +217,7 @@ make test-integration # интеграционные тесты PostgreSQL, ну
 make frontend-test    # typecheck, Vitest, прод-сборка
 make build            # оба бинарника + веб-бандл
 make smoke-compose    # полный smoke в Compose: upload → … → export → audit
+# frontend-test также прогоняет Prettier --check и ESLint до сборки.
 ```
 
 Локальная разработка без Docker: доступный PostgreSQL, затем `go run ./cmd/api`, `go run ./cmd/worker` и `npm run dev` в `web/` (Vite проксирует `/api`). Конфигурация — только через окружение, см. [`.env.example`](.env.example). `WEB_DIR` опционален; пустое значение — API отдаёт только JSON.
@@ -229,7 +233,7 @@ CI гоняет Go, интеграционные и фронтенд-набор�
 
 ### Документация
 
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · [`docs/API_CONTRACT.md`](docs/API_CONTRACT.md) · [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md) · [`docs/DECISIONS.md`](docs/DECISIONS.md) (журнал ADR) · [`docs/DEMO_SCRIPT.md`](docs/DEMO_SCRIPT.md)
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · [`docs/API_CONTRACT.md`](docs/API_CONTRACT.md) · [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md) · [`docs/DECISIONS.md`](docs/DECISIONS.md) (журнал ADR) · [`docs/DEMO_SCRIPT.md`](docs/DEMO_SCRIPT.md) · [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)
 
 ---
 
@@ -241,8 +245,9 @@ These are current boundaries of the running system, not a roadmap. · Это т�
 |---|---|---|
 | **Payments** | No invoice payment or bank connectivity, by design. | Нет оплаты счетов и подключения к банку — принципиально. |
 | **Accounting** | Not a bookkeeping/tax system; no compliance claim. | Не бухгалтерия и не налоги; никаких заявлений о соответствии. |
-| **Auth** | Local demo uses one fixed server-side actor. No login, no multi-user authorization. | Локальное демо — один фиксированный актор. Нет входа и многопользовательской авторизации. |
-| **AI provider** | Default extractor is a deterministic offline fake; it recognizes only the bundled fictional fixtures and returns an empty proposal for anything else rather than guessing. | Экстрактор по умолчанию — офлайн-заглушка; распознаёт только вложенные вымышленные образцы, для остального возвращает пустое предложение, а не выдумку. |
+| **Auth** | One fixed server-side actor. No login, no multi-user authorization — including on a publicly reachable instance, where every visitor shares one workspace. A public deployment is opt-in configuration (ADR-016, [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)); this repository operates none and publishes no URL. | Один фиксированный актор. Нет входа и многопользовательской авторизации — в том числе на публичном стенде, где все посетители делят одно рабочее пространство. Публичное развёртывание — явная настройка (ADR-016, [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)); репозиторий не поддерживает ни одного стенда и не публикует URL. |
+| **AI provider** | No model runs by default. The offline path is a fixture registry plus a regex reader that handles ordinary invoice layouts; both are deterministic, and neither is an accuracy claim. Unread fields stay empty rather than being guessed. | По умолчанию модель не вызывается. Офлайн-путь — реестр фикстур плюс regex-ридер для обычных раскладок счёта; оба детерминированы и не являются заявлением о точности. Непрочитанные поля остаются пустыми, а не угадываются. |
+| **Heuristic limits** | The regex reader skips locale-ambiguous slash dates (`03/04/2026`), reads per-line tax as unknown rather than zero, and proposes a supplier name only when another field corroborates it. | Regex-ридер пропускает неоднозначные даты через слэш (`03/04/2026`), не считает построчный налог нулём и предлагает поставщика только при подтверждении другим полем. |
 | **OCR** | JPEG/PNG go through Tesseract; raster OCR for scanned PDFs is intentionally not implemented. | JPEG/PNG идут через Tesseract; растровый OCR для сканированных PDF намеренно не реализован. |
 | **Webhooks** | At-least-once delivery; "exactly once" is not claimed. | Доставка at-least-once; «ровно один раз» не заявляется. |
 | **Scope** | No document list/search, no manual retry endpoint, no metrics endpoint. | Нет списка/поиска документов, ручного ретрая и эндпоинта метрик. |

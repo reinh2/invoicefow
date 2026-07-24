@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"os"
 	"regexp"
@@ -17,6 +18,7 @@ import (
 	"github.com/reinhlord/invoiceflow/internal/export"
 	"github.com/reinhlord/invoiceflow/internal/platform"
 	"github.com/reinhlord/invoiceflow/internal/processing"
+	"github.com/reinhlord/invoiceflow/internal/ratelimit"
 	"github.com/reinhlord/invoiceflow/internal/webui"
 )
 
@@ -35,6 +37,7 @@ type reviewService interface {
 	ExportCSV(context.Context, string, string) ([]byte, error)
 	ApprovedVersionNumber(context.Context, string) (int, error)
 	EnqueueWebhookExport(context.Context, string, string) (processing.ExportRecord, error)
+	ListDocuments(context.Context, int, string) (processing.DocumentPage, error)
 }
 type apiDependencies struct {
 	db                pinger
@@ -44,6 +47,10 @@ type apiDependencies struct {
 	web               *webui.Bundle
 	actor, tempDir    string
 	webhookConfigured bool
+	// publicDemo only changes what the interface tells the visitor; it grants
+	// and withholds nothing. uploadLimiter is nil when limiting is disabled.
+	publicDemo    bool
+	uploadLimiter *ratelimit.Limiter
 }
 
 func newHandler(db pinger) http.Handler { return newHandlerWithDependencies(apiDependencies{db: db}) }
@@ -64,6 +71,8 @@ func newHandlerWithDependencies(deps apiDependencies) http.Handler {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 	})
 	mux.HandleFunc("POST /api/v1/documents", func(w http.ResponseWriter, r *http.Request) { uploadDocument(w, r, deps) })
+	mux.HandleFunc("GET /api/v1/documents", func(w http.ResponseWriter, r *http.Request) { listDocuments(w, r, deps) })
+	mux.HandleFunc("GET /api/v1/config", func(w http.ResponseWriter, r *http.Request) { getClientConfig(w, deps) })
 	mux.HandleFunc("GET /api/v1/documents/{id}", func(w http.ResponseWriter, r *http.Request) { getDocumentReview(w, r, deps) })
 	mux.HandleFunc("GET /api/v1/documents/{id}/source", func(w http.ResponseWriter, r *http.Request) { getDocumentSource(w, r, deps) })
 	mux.HandleFunc("POST /api/v1/documents/{id}/human-reviews", func(w http.ResponseWriter, r *http.Request) { saveHumanReview(w, r, deps) })
@@ -124,6 +133,37 @@ func documentID(w http.ResponseWriter, r *http.Request) (string, bool) {
 		return "", false
 	}
 	return id, true
+}
+
+// listDocuments returns one bounded, presentation-safe page of documents. The
+// page size is clamped by the repository and the cursor is opaque, so a client
+// can neither request an unbounded scan nor construct a cursor of its own.
+func listDocuments(w http.ResponseWriter, r *http.Request, deps apiDependencies) {
+	if deps.review == nil {
+		writeAPIError(w, 500, "internal_error", "request could not be completed")
+		return
+	}
+	pageSize := 0
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 {
+			writeAPIError(w, http.StatusBadRequest, "invalid_pagination", "limit must be a positive integer")
+			return
+		}
+		pageSize = parsed
+	}
+	page, err := deps.review.ListDocuments(r.Context(), pageSize, r.URL.Query().Get("cursor"))
+	if err != nil {
+		if errors.Is(err, processing.ErrInvalidCursor) {
+			writeAPIError(w, http.StatusBadRequest, "invalid_pagination", "cursor is not valid")
+			return
+		}
+		writeAPIError(w, 500, "internal_error", "request could not be completed")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	writeJSON(w, http.StatusOK, page)
 }
 
 func getDocumentReview(w http.ResponseWriter, r *http.Request, deps apiDependencies) {
@@ -357,11 +397,41 @@ func writeReviewError(w http.ResponseWriter, err error) {
 		writeAPIError(w, http.StatusInternalServerError, "internal_error", "request could not be completed")
 	}
 }
+
+// getClientConfig exposes only presentation flags the browser needs. It must
+// never carry a secret, a destination, a path, or anything that grants
+// authority — the client is untrusted and this route is unauthenticated.
+func getClientConfig(w http.ResponseWriter, deps apiDependencies) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	writeJSON(w, http.StatusOK, map[string]any{"public_demo": deps.publicDemo})
+}
+
+// rateLimitClient identifies a caller for rate limiting by transport peer
+// address only. A forwarded-for header is deliberately not trusted: any client
+// can set one, so honouring it would let a single caller bypass the limit by
+// varying a header. A deployment behind a proxy must therefore enforce its own
+// limit at that proxy.
+func rateLimitClient(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
 func uploadDocument(w http.ResponseWriter, r *http.Request, deps apiDependencies) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store")
 	if deps.intake == nil || deps.storage == nil {
 		writeAPIError(w, 500, "internal_error", "request could not be completed")
+		return
+	}
+	// Checked before the body is read: a refused caller must not be able to make
+	// the server consume 20 MiB per attempt.
+	if allowed, retryAfter := deps.uploadLimiter.Allow(rateLimitClient(r)); !allowed {
+		w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())+1))
+		writeAPIError(w, http.StatusTooManyRequests, "rate_limited", "too many uploads; try again shortly")
 		return
 	}
 	if encoding := r.Header.Get("Content-Encoding"); encoding != "" && encoding != "identity" {

@@ -11,7 +11,11 @@ type UploadState =
 
 const acceptedTypes = '.pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png';
 
-export function DocumentUpload({ onQueued }: { onQueued?: (documentID: string) => void }): ReactElement {
+export function DocumentUpload({
+  onQueued,
+}: {
+  onQueued?: (documentID: string) => void;
+}): ReactElement {
   const [state, setState] = useState<UploadState>({ kind: 'idle' });
   const isUploading = state.kind === 'uploading';
 
@@ -26,7 +30,13 @@ export function DocumentUpload({ onQueued }: { onQueued?: (documentID: string) =
         setState({ kind: 'duplicate', message: error.message });
         return;
       }
-      setState({ kind: 'error', message: error instanceof UploadRequestError ? error.message : 'InvoiceFlow could not accept this file. Please try again.' });
+      setState({
+        kind: 'error',
+        message:
+          error instanceof UploadRequestError
+            ? error.message
+            : 'InvoiceFlow could not accept this file. Please try again.',
+      });
     }
   };
 
@@ -45,31 +55,88 @@ export function DocumentUpload({ onQueued }: { onQueued?: (documentID: string) =
     selectFile(event.dataTransfer.files);
   };
 
-  return <section className="upload-workspace" aria-labelledby="workspace-title">
-    <div className="paper-panel" aria-hidden="true"><span>Original document</span><div className="paper-lines" /></div>
-    <div className="workspace-copy">
-      <p className="eyebrow">Document intake</p>
-      <h2 id="workspace-title">Upload an invoice to begin processing.</h2>
-      <p>Choose a PDF, JPG, or PNG. The server validates every file before it is accepted.</p>
-      <form className="upload-form" aria-busy={isUploading} onSubmit={(event) => event.preventDefault()}>
-        <label className="upload-dropzone" onDragOver={(event) => event.preventDefault()} onDrop={handleDrop}>
-          <span className="upload-dropzone-title">Select an invoice file</span>
-          <span className="upload-dropzone-hint">PDF, JPG, or PNG. You can also drop one here.</span>
-          <input className="upload-input" type="file" name="file" aria-label="Invoice file" accept={acceptedTypes} disabled={isUploading} onChange={handleChange} />
-        </label>
-      </form>
-      <p className="field-note">Accepted types are a browser hint only; server validation decides whether a file can be accepted.</p>
-      <UploadStatus state={state} />
-    </div>
-  </section>;
+  return (
+    <section className="upload-workspace" aria-labelledby="workspace-title">
+      <div className="paper-panel" aria-hidden="true">
+        <span>Original document</span>
+        <div className="paper-lines" />
+      </div>
+      <div className="workspace-copy">
+        <p className="eyebrow">Document intake</p>
+        <h2 id="workspace-title">Upload an invoice to begin processing.</h2>
+        <p>Choose a PDF, JPG, or PNG. The server validates every file before it is accepted.</p>
+        <form
+          className="upload-form"
+          aria-busy={isUploading}
+          onSubmit={(event) => event.preventDefault()}
+        >
+          <label
+            className="upload-dropzone"
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={handleDrop}
+          >
+            <span className="upload-dropzone-title">Select an invoice file</span>
+            <span className="upload-dropzone-hint">
+              PDF, JPG, or PNG. You can also drop one here.
+            </span>
+            <input
+              className="upload-input"
+              type="file"
+              name="file"
+              aria-label="Invoice file"
+              accept={acceptedTypes}
+              disabled={isUploading}
+              onChange={handleChange}
+            />
+          </label>
+        </form>
+        <p className="field-note">
+          Accepted types are a browser hint only; server validation decides whether a file can be
+          accepted.
+        </p>
+        <UploadStatus state={state} />
+      </div>
+    </section>
+  );
 }
 
 function UploadStatus({ state }: { state: UploadState }): ReactElement {
   switch (state.kind) {
-    case 'idle': return <p className="upload-status" aria-live="polite">No document selected.</p>;
-    case 'uploading': return <p className="upload-status" aria-live="polite"><StatusTag tone="info">Uploading</StatusTag><span>Sending {state.fileName} for server validation.</span></p>;
-    case 'queued': return <p className="upload-status" aria-live="polite"><StatusTag tone="info">Queued</StatusTag><span>The document was accepted and queued for processing. Opening its review workspace.</span></p>;
-    case 'duplicate': return <p className="upload-status upload-status-warning" role="status" aria-live="polite"><StatusTag tone="warning">Duplicate</StatusTag><span>{state.message}</span></p>;
-    case 'error': return <p className="upload-status upload-status-error" role="alert"><StatusTag tone="danger">Upload failed</StatusTag><span>{state.message}</span></p>;
+    case 'idle':
+      return (
+        <p className="upload-status" aria-live="polite">
+          No document selected.
+        </p>
+      );
+    case 'uploading':
+      return (
+        <p className="upload-status" aria-live="polite">
+          <StatusTag tone="info">Uploading</StatusTag>
+          <span>Sending {state.fileName} for server validation.</span>
+        </p>
+      );
+    case 'queued':
+      return (
+        <p className="upload-status" aria-live="polite">
+          <StatusTag tone="info">Queued</StatusTag>
+          <span>
+            The document was accepted and queued for processing. Opening its review workspace.
+          </span>
+        </p>
+      );
+    case 'duplicate':
+      return (
+        <p className="upload-status upload-status-warning" role="status" aria-live="polite">
+          <StatusTag tone="warning">Duplicate</StatusTag>
+          <span>{state.message}</span>
+        </p>
+      );
+    case 'error':
+      return (
+        <p className="upload-status upload-status-error" role="alert">
+          <StatusTag tone="danger">Upload failed</StatusTag>
+          <span>{state.message}</span>
+        </p>
+      );
   }
 }

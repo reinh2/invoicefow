@@ -8,7 +8,8 @@ export function useReducedMotion(): boolean {
     const media = window.matchMedia?.(query);
     if (media === undefined) return undefined;
     const update = (): void => setReduced(media.matches);
-    update(); media.addEventListener('change', update);
+    update();
+    media.addEventListener('change', update);
     return () => media.removeEventListener('change', update);
   }, []);
   return reduced;

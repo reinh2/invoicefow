@@ -90,7 +90,36 @@ func NormalizeProposal(proposal extraction.Proposal) (NormalizedProposal, []Warn
 			warnings = append(warnings, warning("subtotal_tax_total_mismatch", "total", "Subtotal plus tax does not equal total."))
 		}
 	}
+	warnings = append(warnings, missingFieldWarnings(proposal)...)
 	return result, warnings
+}
+
+// requiredProposalFields are the values a reviewer needs before an invoice can
+// reasonably be approved. Subtotal and tax are deliberately absent: plenty of
+// legitimate invoices state only a total, and warning about those would train
+// the reviewer to ignore warnings.
+var requiredProposalFields = []string{"supplier_name", "invoice_number", "issue_date", "currency", "total"}
+
+// missingFieldWarnings reports required values the extractor did not supply at
+// all. A value that was supplied but rejected already produced its own specific
+// warning (invalid_date, invalid_money, unsupported_currency), so this checks
+// the raw candidate rather than the normalized result and cannot double-report
+// the same field.
+func missingFieldWarnings(proposal extraction.Proposal) []Warning {
+	raw := map[string]*string{
+		"supplier_name":  proposal.SupplierName,
+		"invoice_number": proposal.InvoiceNumber,
+		"issue_date":     proposal.IssueDate,
+		"currency":       proposal.Currency,
+		"total":          proposal.Total,
+	}
+	warnings := make([]Warning, 0, len(requiredProposalFields))
+	for _, field := range requiredProposalFields {
+		if cleanCandidate(raw[field]) == "" {
+			warnings = append(warnings, warning("missing_required_field", field, "This value is required for review but was not extracted."))
+		}
+	}
+	return warnings
 }
 
 func normalizeLine(index int, item extraction.LineItemProposal, exponent int, currencyOK bool) (NormalizedLineItem, []Warning) {

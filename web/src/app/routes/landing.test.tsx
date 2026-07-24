@@ -11,11 +11,16 @@ afterEach(() => {
 });
 
 function preferReducedMotion(reduced: boolean): void {
-  window.matchMedia = ((query: string) => ({
-    matches: reduced && query.includes('reduced'), media: query, onchange: null,
-    addEventListener: () => undefined, removeEventListener: () => undefined,
-    addListener: () => undefined, removeListener: () => undefined, dispatchEvent: () => false,
-  })) as typeof window.matchMedia;
+  window.matchMedia = (query: string) => ({
+    matches: reduced && query.includes('reduced'),
+    media: query,
+    onchange: null,
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+    addListener: () => undefined,
+    removeListener: () => undefined,
+    dispatchEvent: () => false,
+  });
 }
 
 /* Captures the observer callbacks so a test can drive scroll position without a
@@ -24,18 +29,31 @@ function preferReducedMotion(reduced: boolean): void {
 function stubIntersectionObserver(): { fire: (target: Element) => void } {
   const callbacks: IntersectionObserverCallback[] = [];
   class Stub {
-    constructor(given: IntersectionObserverCallback) { callbacks.push(given); }
-    observe(): void { /* geometry is driven by fire() */ }
-    disconnect(): void { /* not used */ }
-    unobserve(): void { /* not used */ }
-    takeRecords(): IntersectionObserverEntry[] { return []; }
+    constructor(given: IntersectionObserverCallback) {
+      callbacks.push(given);
+    }
+    observe(): void {
+      /* geometry is driven by fire() */
+    }
+    disconnect(): void {
+      /* not used */
+    }
+    unobserve(): void {
+      /* not used */
+    }
+    takeRecords(): IntersectionObserverEntry[] {
+      return [];
+    }
   }
   globalThis.IntersectionObserver = Stub as unknown as typeof IntersectionObserver;
   return {
     fire: (target: Element): void => {
       act(() => {
         for (const callback of callbacks) {
-          callback([{ target, isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver);
+          callback(
+            [{ target, isIntersecting: true } as IntersectionObserverEntry],
+            {} as IntersectionObserver,
+          );
         }
       });
     },
@@ -46,13 +64,22 @@ describe('landing page', () => {
   it('describes shipped behavior instead of the retired foundation stage', () => {
     render(<LandingPage />);
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('a person still approves');
-    expect(screen.queryByText(/not connected yet|foundation stage|contains no uploads/i)).not.toBeInTheDocument();
-    expect(screen.getAllByRole('link', { name: 'Open the workspace' })[0]).toHaveAttribute('href', '/app');
+    expect(
+      screen.queryByText(/not connected yet|foundation stage|contains no uploads/i),
+    ).not.toBeInTheDocument();
+    expect(screen.getAllByRole('link', { name: 'Open the workspace' })[0]).toHaveAttribute(
+      'href',
+      '/app',
+    );
   });
 
   it('makes no metric, customer, accuracy, or compliance claim', () => {
     render(<LandingPage />);
-    expect(screen.queryByText(/\d+%|documents processed|customers|trusted by|accuracy|GDPR|SOC ?2|compliant/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        /\d+%|documents processed|customers|trusted by|accuracy|GDPR|SOC ?2|compliant/i,
+      ),
+    ).not.toBeInTheDocument();
   });
 
   it('states the boundaries the system does not cross', () => {
@@ -78,7 +105,9 @@ describe('landing page', () => {
     preferReducedMotion(true);
     stubIntersectionObserver();
     render(<LandingPage />);
-    const steps = within(screen.getByRole('region', { name: /Each state is visible/i })).getAllByRole('listitem');
+    const steps = within(
+      screen.getByRole('region', { name: /Each state is visible/i }),
+    ).getAllByRole('listitem');
     expect(steps[0].parentElement).toHaveAttribute('data-motion', 'static');
     for (const step of steps) expect(step).toHaveAttribute('data-active', 'false');
   });
@@ -87,7 +116,9 @@ describe('landing page', () => {
     preferReducedMotion(false);
     const observer = stubIntersectionObserver();
     render(<LandingPage />);
-    const steps = within(screen.getByRole('region', { name: /Each state is visible/i })).getAllByRole('listitem');
+    const steps = within(
+      screen.getByRole('region', { name: /Each state is visible/i }),
+    ).getAllByRole('listitem');
     expect(steps[0]).toHaveAttribute('data-active', 'true');
 
     observer.fire(steps[2]);
@@ -107,7 +138,9 @@ describe('landing page', () => {
     // @ts-expect-error deliberately removing the API to exercise the fallback path
     delete globalThis.IntersectionObserver;
     render(<LandingPage />);
-    const steps = within(screen.getByRole('region', { name: /Each state is visible/i })).getAllByRole('listitem');
+    const steps = within(
+      screen.getByRole('region', { name: /Each state is visible/i }),
+    ).getAllByRole('listitem');
     expect(steps).toHaveLength(4);
     for (const step of steps) expect(step).toBeVisible();
   });

@@ -20,3 +20,8 @@ web/coverage/
 .claude/settings.local.json
 .DS_Store
 .idea/
+
+# Local coding-agent harness (master prompts, per-tool agent packs). Useful
+# while developing, but it is not part of the product and should not be the
+# first thing a reader of this repository sees.
+.internal/

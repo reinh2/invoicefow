@@ -19,8 +19,9 @@ export function DemoMedia(): ReactElement {
         <p className="eyebrow">See it running</p>
         <h2 id="demo-title">A capture from the real application.</h2>
         <p className="hero-copy">
-          This is the running workspace processing the fictional invoices bundled in the repository — no
-          real customer data, and no paid model. Regenerate it with <code>web/scripts/capture-media.mjs</code>.
+          This is the running workspace processing the fictional invoices bundled in the repository
+          — no real customer data, and no paid model. Regenerate it with{' '}
+          <code>web/scripts/capture-media.mjs</code>.
         </p>
       </div>
       <figure className="demo-media-figure">
@@ -42,12 +43,18 @@ export function DemoMedia(): ReactElement {
           >
             <source src="/media/demo.webm" type="video/webm" />
             {/* Browsers without video support fall back to the static still. */}
-            <img className="demo-media-frame" src={still} alt={stillAlt} width={1280} height={720} />
+            <img
+              className="demo-media-frame"
+              src={still}
+              alt={stillAlt}
+              width={1280}
+              height={720}
+            />
           </video>
         )}
         <figcaption>
-          The landing page and the split review screen, captured from a Docker Compose demo seeded only with
-          fictional documents.
+          The landing page and the split review screen, captured from a Docker Compose demo seeded
+          only with fictional documents.
         </figcaption>
       </figure>
     </section>

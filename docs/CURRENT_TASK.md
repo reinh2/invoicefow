@@ -1,5 +1,114 @@
 # Current Task
 
+## Stage 8 — complete except the deploy itself
+
+Every P0, P1, and P2 item of the Stage 8 demo-experience pass is implemented.
+The one thing left is operating a public instance, which needs a hosting account
+and credentials and is the repository owner's action, not a code change.
+
+### P2 — quality and public-demo readiness
+
+**Frontend tooling and structure.** Prettier and ESLint (typescript-eslint
+type-checked rules plus react-hooks) now run in `make frontend-test` and in CI
+before the build. The whole frontend is reformatted, and `ReviewWorkspace.tsx`
+— 288 lines with individual lines up to 2142 characters — is split into
+`components/review/{ReviewForm,ReviewContext,ConfirmDialog,SourcePanel,ReviewMessage}.tsx`,
+leaving the workspace as a state orchestrator. Lint rules were chosen to catch
+defects rather than style, and they earned that: `react-hooks/set-state-in-effect`
+found three real cascading renders. All three were fixed properly — in
+`ProvenanceStory` the "reveal everything" fallback became derived state instead
+of a write-back from an effect, and in `ReviewWorkspace` and `DocumentList` the
+error reset moved into the success handler, which also stops the message
+flickering during a reload.
+
+**Public-demo readiness (ADR-016).** `PUBLIC_DEMO=true` renders a notice stating
+the workspace is shared, has no sign-in, is periodically erased, and must
+receive only fictional documents. The flag is served from `GET /api/v1/config`,
+whose payload is a single boolean because the route is unauthenticated.
+`UPLOAD_RATE_PER_MINUTE` bounds uploads per client address and is checked
+*before* the request body is read, so a refused caller cannot make the server
+consume 20 MiB per attempt. `X-Forwarded-For` is deliberately ignored: any
+caller can set it, so honouring it would hand out a fresh allowance per request
+— a deployment behind a proxy must limit at that proxy, which ADR-016 and
+`docs/DEPLOYMENT.md` both state. Both settings default to off, so the local demo
+is unchanged. Verified live in Compose: `{"public_demo":true}`, the notice in
+the served bundle, and a 2/minute limit producing `201, 201, 429, 429` with
+`Retry-After: 60`.
+
+**Not done: the deployment.** No public instance is operated and no URL is
+claimed anywhere in this repository. `docs/DEPLOYMENT.md` carries the
+configuration, the ephemeral-data requirements, and a post-deploy checklist.
+
+### P1 — self-consistency with the project's own rules
+
+**Missing-field warnings.** `AGENTS.md` requires warning on missing fields, but
+the normalizer only ever warned about values that were present and rejected, so
+an empty proposal reached the reviewer with no warnings at all.
+`missingFieldWarnings` now reports `missing_required_field` for `supplier_name`,
+`invoice_number`, `issue_date`, `currency`, and `total`. It inspects the raw
+candidate rather than the normalized result, so a value that was supplied and
+rejected keeps its specific warning (`invalid_date`, `invalid_money`,
+`unsupported_currency`) instead of being counted twice. Subtotal and tax are
+deliberately not required: many legitimate invoices state only a total, and
+warning on those would train a reviewer to ignore warnings.
+
+**Field-level warning presentation.** Warnings carry the exact field they
+concern, down to `line_items.0.total`, but the review form ignored it and showed
+everything in one list at the bottom. Each input now renders its own warnings
+with `aria-invalid`, `aria-describedby`, and an amber marker from the existing
+token set; the summary list remains. The warning list is rendered *outside* the
+`<label>` — nesting it folded the warning text into the input's accessible name
+instead of leaving it a description, which an existing test caught.
+
+**Document list.** A document used to be reachable only through the URL returned
+at upload, so closing the tab lost it. `GET /api/v1/documents` returns a bounded
+page, newest first, with keyset pagination on `(created_at, id)` rather than
+offset: a document inserted mid-paging cannot make a row repeat or disappear.
+The page size is clamped server-side (20 default, 100 maximum) and the cursor is
+opaque and validated — a foreign cursor is `400 invalid_pagination`, never a
+silent reset to page one, which would loop a paging client forever. The
+projection is presentation-safe (no SHA-256, object id, storage key, or internal
+version UUID) and an integration test asserts that. `/app` renders the table
+with exact money formatted from integer minor units, never float division.
+
+### P0 — demo experience
+
+**Offline heuristic fallback (ADR-015).** The offline default is now a chain:
+`FallbackStructuredExtractor` asks the fixture registry first and falls through
+to `HeuristicStructuredExtractor` only when the primary returned no candidate at
+all. Before this, any document outside the four committed fixtures reached
+`needs_review` with an entirely empty form — the single worst first impression
+in the project. The heuristic is deterministic, offline, stateless, and
+constrained so that its failure mode is silence rather than fabrication: no
+value is defaulted or inferred, locale-ambiguous slash dates are skipped, a
+percentage is never read as an amount, per-line tax stays unknown rather than
+zero, and a supplier name requires corroboration from another field. Its
+evidence quotes the exact source line, so `ValidateEvidence` verifies it against
+real page text. Server authority is unchanged: the result passes the same
+`ValidateProposal`, `ValidateEvidence`, `money-v1` normalization, and warning
+generation as a model response, and its diagnostic code is allowlisted and
+rewritten server-side in `sanitizeDiagnostics`.
+
+Two defects were found by running this against the live Compose demo rather than
+only in tests. `pdftotext` was invoked without `-layout`, so Poppler emitted
+column-major text that separated every label from its amount — fixed, and it
+improves the reference text for any extractor including a model. And "VAT (19%)"
+was read as a tax amount of 19.00 — a fabricated value, now excluded.
+Verification on an unseen invoice: supplier, email, invoice number, both dates,
+currency, subtotal, tax, total, and both line items all correct, with
+`71.00 + 13.49 = 84.49` producing no spurious warning. Every committed fixture
+keeps a byte-identical snapshot and `scripts/compose-smoke.sh` passes.
+
+**Repository presentation.** The coding-agent harness (`MASTER_PROMPT.md`,
+`MASTER_PROMPT_PREMIUM_DESIGN.md`, `MODEL_ROUTING.md`, `MANIFEST.json`,
+`START_HERE_RU.md`, `gitignore.fragment`, `.kiro/`, `.codex/`) moved to
+`.internal/`, which is git-ignored; the files remain on disk.
+`check-agent-pack.py` moved with it and `agent-pack` left `make check`, since it
+validates the harness rather than the product. `AGENTS.md`, `CLAUDE.md`, and
+`.claude/agents/` were kept deliberately — they are standard agent-configuration
+files, and moving `CLAUDE.md` would break project instruction loading. Git
+history was **not** rewritten; the files are still present in earlier commits.
+
 ## State
 
 Stage 6 — honest landing page, product story, and static application delivery — is **complete**. All five items are implemented and covered by tests, and the two follow-on items that blocked it (realistic fixtures, factual media) are done. The governing decision is ADR-013.

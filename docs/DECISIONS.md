@@ -81,6 +81,8 @@ OCR is a replaceable port. The default adapter runs Tesseract for validated JPEG
 
 **Consequences:** The runtime image is deliberately not distroless because it needs the pinned parser executables. Production deployments need a separately reviewed OS/package update process and stronger sandboxing; Stage 3 does not claim either.
 
+**Amendment (Stage 8, ADR-015):** `pdftotext` is invoked with an additional fixed literal `-layout` argument. Without it Poppler emits column-major text that separates every invoice label from its amount, degrading the reference text for any extractor. Bounds, timeout, and the argument-array invocation are unchanged.
+
 ## ADR-007 — Versioned exact normalization; webhook contracts remain deferred
 
 **Status:** Partially accepted (Stage 3); webhook section deferred to Stage 5
@@ -223,6 +225,11 @@ Outbound network access in the default extraction path is still disabled
 and auth failures are treated as generic extraction errors rather than being
 finely classified; that refinement is deferred.
 
+**Amendment (Stage 8).** The offline default is now a chain rather than a single
+adapter: the fixture registry answers first, and `HeuristicStructuredExtractor`
+runs only when it recognized nothing. See ADR-015. The live provider is
+deliberately not chained.
+
 **Amendment (live verification).** A first live run against `gpt-4o-mini`
 surfaced three defects, all outside the adapter itself, now fixed.
 
@@ -249,3 +256,129 @@ correctly returns `currency: null` and the server emits
 `missing_or_invalid_currency` warnings; that is the designed
 never-invent-a-value behavior, not an extraction fault. The keyed offline fake
 supplies a currency, so the no-key demo is unaffected.
+
+## ADR-015 — Offline heuristic fallback extraction and layout-preserving PDF text
+
+**Status:** Accepted (Stage 8)
+
+**Context:** Through Stage 7 the offline default was `FakeStructuredExtractor`
+alone. It matches a document by committed SHA-256 plus an embedded marker, so it
+recognizes exactly the four fictional fixtures in `testdata/` and nothing else.
+Any other document — including the first real invoice a visitor tries — reached
+`needs_review` with every field empty, no warnings, and a single
+`fake_fixture_unmatched` diagnostic. The behavior was documented honestly, but a
+portfolio demo that answers an ordinary upload with a blank form reads as broken
+rather than as careful. Making a paid provider the default was rejected: the
+no-key, offline, deterministic demo is a stated project invariant.
+
+A second, quieter problem surfaced while validating this. Poppler's `pdftotext`
+was invoked without `-layout`, so it emitted column-major text: on a normal
+invoice every label ("Subtotal") landed on a different line from its amount.
+That degrades the reference text handed to *any* extractor, a model included.
+
+**Decision:** The offline default becomes a two-adapter chain behind the
+unchanged `StructuredExtractor` port.
+
+`FallbackStructuredExtractor` runs the fixture registry first and consults the
+fallback only when the primary returned no candidate values at all. The trigger
+is `Proposal.HasCandidates()` — the shape of the result — not a provider-specific
+diagnostic string, so the chain stays provider neutral. A primary *error* is
+returned unchanged and never masked, because a bounded, classified extraction
+failure must keep flowing into the existing retry and dead-letter path. Both
+adapters' diagnostics are preserved, bounded by `MaxDiagnostics`, so a reviewer
+can still see that the registry was consulted and did not match. The live OpenAI
+provider is deliberately *not* chained: a model returning nothing is a provider
+result an operator should inspect, not a case for a regexp second opinion.
+
+`HeuristicStructuredExtractor` is a deterministic, offline, stateless regex
+reader. It is a demo affordance, not an accuracy claim, and it is constrained so
+that its failure mode is silence rather than fabrication:
+
+- A pattern that does not match leaves the candidate nil. Nothing is defaulted
+  to zero, and no value is inferred from another.
+- Only unambiguous date formats are read: ISO `YYYY-MM-DD`, `DD.MM.YYYY`, and
+  English month names. Slash dates are skipped outright, because `03/04/2026`
+  cannot be resolved without guessing a locale and ADR-007 forbids that.
+- A rate is never an amount: a number followed by `%` is skipped, so "VAT (19%)
+  13.49" yields 13.49, and a row carrying only a rate yields no candidate.
+- Per-line tax is left unknown rather than assumed zero, so the normalizer's
+  line-arithmetic check stays silent instead of raising a mismatch this reader
+  cannot substantiate.
+- Supplier name — by far the weakest signal, since it is just "the first
+  plausible heading" — is proposed only when another field corroborated that the
+  document is an invoice at all.
+- A summary row is not a line item, and a tax registration number is not a tax
+  amount.
+
+Its evidence is truthful by construction: every entry quotes the exact source
+line the value was read from, so `ValidateEvidence`'s substring check passes on
+real data. This is the first adapter that can honestly assert evidence, and it
+does so without any change to the server's verification.
+
+`pdftotext` gains the fixed literal `-layout` argument, under the same output
+cap, timeout, and argument-array invocation as before.
+
+**Consequences:** An unseen invoice now produces real, evidence-backed
+candidates, and the review screen demonstrates provenance instead of emptiness.
+Nothing about server authority changes: the heuristic result is re-validated by
+`ValidateProposal`, re-checked by `ValidateEvidence`, normalized by `money-v1`,
+and warned on exactly like a model response, and its diagnostic code is
+allowlisted and rewritten server-side rather than trusted. Every committed
+fixture keeps its byte-identical snapshot, because the registry still answers
+first. The heuristic will mis-read unusual layouts; that is accepted and stated,
+which is precisely why its output is a proposal a human must approve. This ADR
+adds no network access, no dependency, and no new executable.
+
+ADR-006's recorded invocation is amended by the `-layout` flag.
+
+## ADR-016 — Public demo deployment boundary
+
+**Status:** Accepted (Stage 8). Configuration and hardening are implemented; no
+public instance is operated by this repository.
+
+**Context:** A portfolio reader is far more likely to click a link than to
+install Docker, so a reachable demo is worth real engineering. But every earlier
+decision in this log assumed a loopback instance with one server-configured
+actor: ADR-003 states plainly that the demo makes no multi-user authorization
+claim. Putting that same process on the public internet does not weaken any
+server-side invariant, yet it does change who can reach it — which makes it a
+boundary worth stating rather than an ops detail.
+
+**Decision:** Public exposure is opt-in server configuration, and it grants
+nothing. `PUBLIC_DEMO=true` changes exactly one thing: the interface renders a
+notice saying the instance is shared, has no sign-in, is periodically erased,
+and must receive only fictional documents. The flag is served from
+`GET /api/v1/config`, whose payload is a single boolean — an unauthenticated
+route must never carry a secret, a destination, or anything that grants
+authority. The browser is told, not trusted: no client value influences any
+server decision.
+
+`UPLOAD_RATE_PER_MINUTE` bounds uploads per client address, checked before the
+request body is read, so a refused caller cannot make the server consume 20 MiB
+per attempt. The client is identified by transport peer address only. A
+forwarded-for header is deliberately not honoured: any caller can set one, so
+trusting it would let a single client mint a fresh allowance per request. A
+deployment behind a proxy must therefore enforce its own limit at that proxy —
+this limiter protects one process from casual abuse and makes no distributed
+claim. Both settings default to off, so the local demo is byte-for-byte
+unchanged.
+
+What a public instance must still have, and what this repository does not
+provide, is stated rather than implied: there is no authentication, no
+authorization, no per-visitor isolation, and no production CSRF defence. Anyone
+who reaches the instance can read and act on every document in it. That is
+acceptable for a demo whose only content is fictional and disposable, and
+unacceptable for anything else.
+
+Operating an instance is therefore a deliberate act by the repository owner,
+documented in `docs/DEPLOYMENT.md`: ephemeral database, no persistent volume,
+fictional fixtures only, the offline extractor (no provider key), and a
+scheduled reset. This ADR does not deploy anything and no public URL is claimed
+anywhere in this repository.
+
+**Consequences:** The demo can be published without contradicting ADR-003,
+because publishing changes reachability rather than authority. The honest
+limitation — a shared, unauthenticated, disposable workspace — is stated in the
+product itself, not only in the README, so a visitor cannot mistake it for a
+multi-tenant application. Adding real authentication remains the separate P0
+backlog item it always was.

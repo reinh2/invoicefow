@@ -98,10 +98,14 @@ async function main() {
   // an <object> the headless shell cannot paint, so this script expects an
   // image document for a legible still.)
   await review.locator('img.source-image').waitFor({ state: 'visible' });
-  await review.waitForFunction(() => {
-    const img = document.querySelector('img.source-image');
-    return img instanceof HTMLImageElement && img.complete && img.naturalWidth > 0;
-  }, null, { timeout: 15000 });
+  await review.waitForFunction(
+    () => {
+      const img = document.querySelector('img.source-image');
+      return img instanceof HTMLImageElement && img.complete && img.naturalWidth > 0;
+    },
+    null,
+    { timeout: 15000 },
+  );
   // object-fit: contain centres the tall invoice inside a panel stretched to the
   // full height of the (taller) proposal column, so the drawn image sits well
   // below the fold. Scroll it into frame before the shot.
@@ -120,7 +124,14 @@ async function main() {
   await browser.close();
 
   const files = await readdir(outDir);
-  console.log('wrote', files.filter((f) => !f.startsWith('.')).sort().join(', '), 'to web/public/media/');
+  console.log(
+    'wrote',
+    files
+      .filter((f) => !f.startsWith('.'))
+      .sort()
+      .join(', '),
+    'to web/public/media/',
+  );
 }
 
 main().catch((error) => {

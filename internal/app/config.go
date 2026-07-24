@@ -4,6 +4,8 @@ package app
 import (
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -36,6 +38,14 @@ type Config struct {
 	OpenAIAPIKey  string
 	OpenAIModel   string
 	OpenAIBaseURL string
+	// PublicDemo marks a deployment that anyone on the internet can reach. It
+	// changes no authority — there is still no authentication — it only lets the
+	// interface state plainly that the instance is a shared demo whose data is
+	// periodically erased. Default false keeps the local demo unchanged.
+	PublicDemo bool
+	// UploadRatePerMinute bounds uploads per client address. Zero disables
+	// limiting, which is the default for the local demo.
+	UploadRatePerMinute int
 }
 
 func LoadConfig() (Config, error) {
@@ -55,6 +65,16 @@ func LoadConfig() (Config, error) {
 		OpenAIModel:   os.Getenv("OPENAI_MODEL"),
 		OpenAIBaseURL: os.Getenv("OPENAI_BASE_URL"),
 	}
+	publicDemo, err := envBool("PUBLIC_DEMO")
+	if err != nil {
+		return Config{}, err
+	}
+	c.PublicDemo = publicDemo
+	uploadRate, err := envInt("UPLOAD_RATE_PER_MINUTE")
+	if err != nil {
+		return Config{}, err
+	}
+	c.UploadRatePerMinute = uploadRate
 	if c.DemoActor == "" {
 		return Config{}, fmt.Errorf("demo actor must not be empty")
 	}
@@ -81,4 +101,31 @@ func envOr(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// envBool accepts only the two unambiguous spellings. A typo must not be read
+// as "false" and quietly disable a protection an operator believed was on.
+func envBool(key string) (bool, error) {
+	switch strings.TrimSpace(os.Getenv(key)) {
+	case "":
+		return false, nil
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	default:
+		return false, fmt.Errorf("%s must be true or false", key)
+	}
+}
+
+func envInt(key string) (int, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return 0, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 0 {
+		return 0, fmt.Errorf("%s must be a non-negative integer", key)
+	}
+	return value, nil
 }

@@ -232,14 +232,21 @@ func processingErrorSummary(err error) string {
 		return "processing failed; retry scheduled"
 	}
 }
+
+// sanitizeDiagnostics replaces every adapter diagnostic with a server-owned
+// code and message. Only codes on this allowlist keep their identity, and even
+// those never keep the adapter's own message text.
 func sanitizeDiagnostics(diagnostics []extraction.Diagnostic) []extraction.Diagnostic {
 	result := make([]extraction.Diagnostic, 0, len(diagnostics))
 	for _, diagnostic := range diagnostics {
-		if diagnostic.Code == "fake_fixture_unmatched" {
+		switch diagnostic.Code {
+		case "fake_fixture_unmatched":
 			result = append(result, extraction.Diagnostic{Code: diagnostic.Code, Message: "No configured fictional fixture matched this document."})
-			continue
+		case extraction.HeuristicDiagnosticCode:
+			result = append(result, extraction.Diagnostic{Code: diagnostic.Code, Message: "Values were read by the offline heuristic reader. Verify every field against the original."})
+		default:
+			result = append(result, extraction.Diagnostic{Code: "provider_diagnostic", Message: "The extractor reported a diagnostic."})
 		}
-		result = append(result, extraction.Diagnostic{Code: "provider_diagnostic", Message: "The extractor reported a diagnostic."})
 	}
 	return result
 }
