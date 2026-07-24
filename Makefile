@@ -1,4 +1,4 @@
-.PHONY: fmt lint test test-integration frontend-test build up smoke-compose check agent-pack
+.PHONY: fmt lint test test-integration frontend-test build build-go build-web up smoke-compose check agent-pack
 
 fmt:
 	gofmt -w $$(find cmd internal -name '*.go' -type f)
@@ -16,9 +16,15 @@ test-integration:
 frontend-test:
 	cd web && npm run typecheck && npm run test && npm run build
 
-build:
+# build-go needs no Node toolchain, so a Go-only environment can use it. build
+# keeps its full meaning for a local release gate.
+build-go:
 	go build ./cmd/api ./cmd/worker
+
+build-web:
 	cd web && npm run build
+
+build: build-go build-web
 
 up:
 	docker compose up --build --wait

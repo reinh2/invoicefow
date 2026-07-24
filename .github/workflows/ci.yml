@@ -31,7 +31,8 @@ jobs:
       - run: make test-integration
         env:
           DATABASE_URL: postgres://invoiceflow:invoiceflow@127.0.0.1:5432/invoiceflow?sslmode=disable
-      - run: make build
+      # This job installs no Node toolchain; the frontend job builds the bundle.
+      - run: make build-go
 
   frontend:
     runs-on: ubuntu-latest
