@@ -72,9 +72,13 @@ func newHandlerWithDependencies(deps apiDependencies) http.Handler {
 	mux.HandleFunc("GET /api/v1/documents/{id}/export/csv", func(w http.ResponseWriter, r *http.Request) { exportCSV(w, r, deps) })
 	mux.HandleFunc("POST /api/v1/documents/{id}/export/webhook", func(w http.ResponseWriter, r *http.Request) { exportWebhook(w, r, deps) })
 	if deps.web != nil {
-		// Registered last and only as GET/HEAD on "/", so every API and health
-		// pattern above stays more specific and keeps its own method handling.
-		mux.Handle("GET /", serveWebBundle(deps.web))
+		// Registered last on the bare "/" pattern (all methods) so every API and
+		// health pattern above stays strictly more specific and wins by
+		// specificity, while unmatched paths — including non-GET methods — reach
+		// serveWebBundle. This lets the reserved-prefix guard answer with the JSON
+		// envelope regardless of method instead of leaving Go's mux to emit a bare
+		// 405 for, say, a POST to a mistyped /api route.
+		mux.Handle("/", serveWebBundle(deps.web))
 	}
 	return mux
 }
@@ -84,15 +88,29 @@ func newHandlerWithDependencies(deps apiDependencies) http.Handler {
 // envelope rather than HTML that a client would try to parse as data.
 var reservedPrefixes = []string{"/api/", "/healthz", "/readyz"}
 
+// reservedRoute reports whether path belongs to a server-owned namespace that
+// must answer with the JSON error envelope rather than the application shell.
+// The comparison is case-insensitive so /API/... cannot slip through to HTML.
+func reservedRoute(path string) bool {
+	lower := strings.ToLower(path)
+	for _, prefix := range reservedPrefixes {
+		if lower == strings.TrimSuffix(prefix, "/") || strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func serveWebBundle(bundle *webui.Bundle) http.Handler {
 	assets := bundle.Handler()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		for _, prefix := range reservedPrefixes {
-			if r.URL.Path == strings.TrimSuffix(prefix, "/") || strings.HasPrefix(r.URL.Path, prefix) {
-				writeAPIError(w, http.StatusNotFound, "route_not_found", "route could not be found")
-				return
-			}
+		if reservedRoute(r.URL.Path) {
+			writeAPIError(w, http.StatusNotFound, "route_not_found", "route could not be found")
+			return
 		}
+		// bundle.Handler applies its own GET/HEAD method gate (a non-GET request
+		// to a non-reserved path gets a hardened 405) and serves the shell or a
+		// 404 for known asset extensions.
 		assets.ServeHTTP(w, r)
 	})
 }

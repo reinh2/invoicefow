@@ -175,6 +175,71 @@ func TestWebBundleDoesNotShadowAPIOrHealthRoutes(t *testing.T) {
 	}
 }
 
+// A non-GET request to a reserved namespace (including a mistyped API path or an
+// uppercase variant) must still receive the JSON route_not_found envelope, not a
+// bare 405 or the application shell. This is the ADR-013 contract that the bare
+// "GET /" registration used to break for every method other than GET.
+func TestWebBundleReservedRoutesAnswerJSONForAllMethods(t *testing.T) {
+	handler := webBundleHandler(t, &fakeReview{})
+	cases := []struct{ method, path string }{
+		{http.MethodPost, "/api/v1/unknown"},
+		{http.MethodDelete, "/api/v1/documents/0d0c2342-2486-4f10-a858-e75bc763f3e4"},
+		{http.MethodPut, "/api/"},
+		{http.MethodPost, "/healthz"},
+		{http.MethodGet, "/API/v1/unknown"},
+	}
+	for _, c := range cases {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(c.method, c.path, nil))
+		if recorder.Code != http.StatusNotFound {
+			t.Fatalf("%s %s: status = %d, want 404", c.method, c.path, recorder.Code)
+		}
+		if strings.Contains(recorder.Body.String(), "<!doctype html>") {
+			t.Fatalf("%s %s: answered with the application shell", c.method, c.path)
+		}
+		var body apiError
+		if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil || body.Error.Code != "route_not_found" {
+			t.Fatalf("%s %s: body = %q err = %v", c.method, c.path, recorder.Body.String(), err)
+		}
+	}
+}
+
+// A registered API route keeps its own handler even though the bundle now owns
+// the bare "/" pattern: specificity wins, so a POST upload is not shadowed.
+func TestWebBundleDoesNotShadowRegisteredAPIHandlers(t *testing.T) {
+	handler := webBundleHandler(t, &fakeReview{})
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/documents", nil))
+	// Reaching the real upload handler yields a validation error envelope, never
+	// the shell or a route_not_found for a path that genuinely exists.
+	if strings.Contains(recorder.Body.String(), "<!doctype html>") {
+		t.Fatalf("POST /api/v1/documents answered with the application shell: %q", recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "route_not_found") {
+		t.Fatalf("POST /api/v1/documents was shadowed by the bundle: %q", recorder.Body.String())
+	}
+}
+
+// A non-GET request to a non-reserved client path is a hardened 405 from the
+// bundle handler, carrying the same security headers as every static response.
+func TestWebBundleRejectsNonGETClientPaths(t *testing.T) {
+	handler := webBundleHandler(t, &fakeReview{})
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/app", nil))
+	if recorder.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST /app: status = %d, want 405", recorder.Code)
+	}
+	if got := recorder.Header().Get("Allow"); got != "GET, HEAD" {
+		t.Fatalf("POST /app: Allow = %q", got)
+	}
+	if got := recorder.Header().Get("Content-Security-Policy"); got == "" {
+		t.Fatal("POST /app: 405 response is missing the Content-Security-Policy header")
+	}
+	if got := recorder.Header().Get("Referrer-Policy"); got != "same-origin" {
+		t.Fatalf("POST /app: Referrer-Policy = %q", got)
+	}
+}
+
 func TestWebBundleServesTheShellForClientRoutedPaths(t *testing.T) {
 	handler := webBundleHandler(t, &fakeReview{})
 	for _, path := range []string{"/", "/app", "/app/documents/0d0c2342-2486-4f10-a858-e75bc763f3e4"} {

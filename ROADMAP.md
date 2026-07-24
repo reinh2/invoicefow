@@ -10,7 +10,7 @@ InvoiceFlow превращает PDF/JPG/PNG-счёт в **структурир�
 
 ## Где проект находится сейчас
 
-Завершены этапы 0–5 и большая часть этапа 6. Репозиторий не прототип: Go API и worker, PostgreSQL, React/Vite-интерфейс, Docker Compose, зелёный CI (Go + integration + frontend). Проверенная сквозная цепочка: **загрузка → durable processing → извлечение → `needs_review` → неизменяемая human-review версия → утверждение точной версии → CSV / signed webhook экспорт**, интерфейс раздаётся из API (`WEB_DIR`, ADR-013).
+Завершены этапы 0–6. Репозиторий не прототип: Go API и worker, PostgreSQL, React/Vite-интерфейс, Docker Compose, зелёный CI (Go + integration + frontend). Проверенная сквозная цепочка: **загрузка → durable processing → извлечение → `needs_review` → неизменяемая human-review версия → утверждение точной версии → CSV / signed webhook экспорт**, интерфейс раздаётся из API (`WEB_DIR`, ADR-013) с честным лендингом и media asset из реального приложения.
 
 | Область | Статус |
 | --- | --- |
@@ -19,24 +19,24 @@ InvoiceFlow превращает PDF/JPG/PNG-счёт в **структурир�
 | Извлечение (bounded Poppler, OCR для изображений, строгая схема, `money-v1`, warnings) | ✅ Готово с ограничениями |
 | Ревью (оригинал рядом с данными, неизменяемые версии, отклонение, audit) | ✅ Готово |
 | Утверждение и экспорт (exact version, CSV, signed webhook, export jobs) | ✅ Готово |
-| Раздача фронтенда из API + честный landing со scroll-историей (этап 6) | 🟡 Почти: нет media asset |
+| Раздача фронтенда из API + честный landing со scroll-историей + media asset (этап 6) | ✅ Готово |
 | Release-пакет (фикстуры, скриншоты, demo script, финальные ревью, release gate) | 🔴 Не готов |
 
 ---
 
 ## ⇒ Что осталось сделать
 
-### Этап 6 — завершить (1 из 5 пунктов открыт)
+### Этап 6 — завершён
 
-- [ ] **Реалистичные фиктивные фикстуры.** Текущий `testdata/stage2-fictional-compose.pdf` — синтетика на 605 байт, панель оригинала в review рендерится пустой. Это блокирует и media asset, и скриншоты. Нужно ≥3 fictional-документа, безопасных для публикации (см. этап 7 — работа общая).
-- [ ] **Media asset (ADR-005).** Хотя бы один реальный оптимизированный asset из приложения (короткий WebM/MP4 с poster/fallback или image sequence) с зафиксированным источником, командой регенерации и размерным бюджетом. *Требует решения:* добавить headless-инструмент захвата (Playwright / headless-Chrome контейнер) — новой зависимости в репозитории пока нет.
-- [ ] **Ревью новой границы `internal/webui`** — code-reviewer и security-reviewer по раздаче статики (ADR-013): path resolution, заголовки, CSP, отсутствие обхода `/api`.
+- [x] **Реалистичные фиктивные фикстуры.** `testdata/` содержит три правдоподобных, полностью вымышленных документа, сгенерированных `scripts/gen-fixtures.py`: `fixture-aurora-stationery.pdf` (чистый text-PDF), `fixture-meridian-supplies.png` (image через OCR), `fixture-cedarline-services.pdf` (даёт ровно один `subtotal_tax_total_mismatch`). Каждая зарегистрирована в `cmd/worker` по реальному SHA-256 и маркеру; `cmd/worker/main_test.go` проверяет хеши и набор warnings через реальную нормализацию, а Compose smoke гоняет и text-PDF, и OCR-путь.
+- [x] **Media asset (ADR-005).** `web/public/media/` содержит `demo.webm` (muted-скролл лендинга, ~2.3 МБ), `demo-landing-poster.png` и `demo-review.png` (review-экран с засеянным Meridian-счётом). Регенерация — `web/scripts/capture-media.mjs` (`@playwright/test`, `npm --prefix web run capture:media`) поверх изолированного засеянного Compose-демо; лендинг встраивает видео с poster и равнозначным reduced-motion/без-video путём (`DemoMedia`).
+- [x] **Ревью новой границы `internal/webui`** — `code-reviewer` и `security-reviewer` прошли по раздаче статики (ADR-013). High-severity нет: traversal/symlink-escape/листинг структурно невозможны, content-type и разделение с реальными API-роутами корректны. Medium (non-GET к зарезервированным префиксам отдавал голый 405 вместо JSON-envelope) и low-находки (заголовки на 405, учёт байт-бюджета, регистр префиксов, `object-src`) исправлены и покрыты тестами.
 
-Сделано на этапе 6: раздача бандла из API (ADR-013), честный `/` без ложных метрик, scroll-story с равнозначным reduced-motion путём, разбивка CSS по поверхностям. Детали — в `docs/CURRENT_TASK.md`.
+Сделано на этапе 6: раздача бандла из API (ADR-013), честный `/` без ложных метрик, scroll-story с равнозначным reduced-motion путём, разбивка CSS по поверхностям, реалистичные фикстуры, media asset и ревью границы. Детали — в `docs/CURRENT_TASK.md`.
 
 ### Этап 7 — воспроизводимый portfolio release
 
-- [ ] **Три фикстуры** разных путей: чистый text-PDF, JPEG/PNG через OCR, документ с warning. Всё fictional и безопасно для публикации. *(Пересекается с фикстурами этапа 6.)*
+- [x] **Три фикстуры** разных путей: чистый text-PDF, JPEG/PNG через OCR, документ с warning. Всё fictional и безопасно для публикации. *(Сделано на этапе 6: `fixture-aurora-stationery.pdf`, `fixture-meridian-supplies.png`, `fixture-cedarline-services.pdf`.)*
 - [ ] **Расширить Compose smoke** на failure paths: duplicate, warning/correction, retry/dead-letter. Сейчас smoke покрывает happy path + rejection.
 - [ ] **Скриншоты из реального приложения** и **demo script на 60–90 секунд**.
 - [ ] **Финальные ревью:** code, database, security, document-AI, frontend/accessibility, performance. Закрыть все high-severity или явно не выпускать релиз.
@@ -72,7 +72,7 @@ sh scripts/compose-smoke.sh
 ```text
 ✅ intake → processing → extraction → human review/reject
 ✅ approve exact version → CSV / webhook jobs → export history
-🟡 Этап 6: честный product story + раздача UI из API   ← нет media asset
+✅ Этап 6: честный product story + раздача UI из API + media asset
 🔴 Этап 7: reproducible portfolio release
    └─ После релиза: production hardening и расширения только по отдельным ADR
 ```

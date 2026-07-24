@@ -109,6 +109,36 @@
   margin-bottom: var(--space-8);
 }
 
+/* Demo media */
+.demo-media {
+  padding: var(--space-10) 0;
+  border-top: 1px solid var(--line);
+}
+
+.demo-media-figure {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.demo-media-frame {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+
+.demo-media-figure figcaption {
+  max-width: 72ch;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 .section-intro h2,
 .story-intro h2 {
   margin-bottom: var(--space-4);

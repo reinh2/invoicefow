@@ -102,6 +102,29 @@ describe('landing page', () => {
     for (const step of steps) expect(step).toBeVisible();
   });
 
+  it('embeds a captured demo video from the real application with a static fallback', () => {
+    preferReducedMotion(false);
+    render(<LandingPage />);
+    const demo = within(screen.getByRole('region', { name: /capture from the real application/i }));
+    const video = demo.getByLabelText(/muted screen capture/i);
+    expect(video.tagName).toBe('VIDEO');
+    expect(video).toHaveAttribute('poster', '/media/demo-landing-poster.png');
+    expect(video.querySelector('source')).toHaveAttribute('src', '/media/demo.webm');
+    // The still doubles as the no-video fallback inside the <video> element.
+    const fallback = demo.getByAltText(/Meridian Office Supplies invoice/i);
+    expect(fallback).toHaveAttribute('src', '/media/demo-review.png');
+  });
+
+  it('shows the static review still instead of the video when motion is reduced', () => {
+    preferReducedMotion(true);
+    render(<LandingPage />);
+    const demo = within(screen.getByRole('region', { name: /capture from the real application/i }));
+    expect(demo.queryByLabelText(/muted screen capture/i)).not.toBeInTheDocument();
+    const still = demo.getByAltText(/Meridian Office Supplies invoice/i);
+    expect(still.tagName).toBe('IMG');
+    expect(still).toHaveAttribute('src', '/media/demo-review.png');
+  });
+
   it('keeps one top-level heading and labels every section', () => {
     render(<LandingPage />);
     expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);

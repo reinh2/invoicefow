@@ -65,6 +65,8 @@
 
 **Consequences:** The landing page remains honest during development while the portfolio release still demonstrates media production and performance discipline.
 
+**Fulfilled (Stage 6):** `web/public/media/` ships `demo.webm` (a muted landing screen capture), `demo-landing-poster.png` (poster), and `demo-review.png` (the split review screen on the seeded Meridian fixture, doubling as the reduced-motion and no-video fallback). All three are captured from the real application on fictional fixtures by the committed `web/scripts/capture-media.mjs` (`@playwright/test`) against an isolated seeded Compose demo; the landing's `DemoMedia` component embeds the video with the still as its reduced-motion path.
+
 ## ADR-006 — Pinned PDF/OCR toolchain, limits, and hostile-PDF handling
 
 **Status:** Accepted (Stage 3)
@@ -172,3 +174,5 @@ Every static response carries `X-Content-Type-Options: nosniff` and a fixed rest
 The landing page describes only shipped behavior. It contains no metric, customer, accuracy figure, or compliance statement, and its product imagery originates from real fictional-fixture runs of this application.
 
 **Consequences:** `docker compose up` now yields a complete demonstrable product on one loopback port, and real product media can be captured from it. This is asset delivery only: it adds no authentication, no session, no user-supplied content rendering, and no multi-user authorization claim. Production deployments would still place their own TLS termination, cache, and access control in front of this boundary.
+
+**Amendment (Stage 6 review).** The project code and security reviewers audited this boundary and found no high-severity issue; traversal, symlink escape, directory listing, content-type spoofing, and route confusion for real endpoints are structurally prevented. Two refinements were applied from that review. First, the fallback is registered on the bare `/` pattern (all methods) instead of `GET /`, so the reserved-prefix guard runs for every method: an unmatched or method-mismatched `/api/`, `/healthz`, or `/readyz` request now returns the JSON `route_not_found` envelope for any method (previously a non-GET request received Go's bare `405`), while method-specific API routes still win by specificity and a non-GET request to a non-reserved client path is a hardened `405`. The reserved-prefix check is case-insensitive. Second, the CSP tightens `object-src` to `'none'`, the 405 path emits the full hardened header set, and the load byte-budget is enforced against the bytes actually read. New tests in `cmd/api` and `internal/webui` cover the all-method envelope and the header/limit changes.

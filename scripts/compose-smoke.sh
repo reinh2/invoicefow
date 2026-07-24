@@ -35,7 +35,7 @@ curl --fail --silent --show-error "${base_url}/app" | grep -q '<div id="root">'
 curl --silent --show-error "${base_url}/api/v1/unknown" | grep -q '"code":"route_not_found"'
 ! curl --silent --show-error "${base_url}/assets/index-absent.js" | grep -q '<div id="root">'
 
-response="$(curl --fail --silent --show-error -F 'file=@testdata/stage2-fictional-compose.pdf;type=application/pdf' "${base_url}/api/v1/documents")"
+response="$(curl --fail --silent --show-error -F 'file=@testdata/fixture-aurora-stationery.pdf;type=application/pdf' "${base_url}/api/v1/documents")"
 document_id="$(printf '%s' "$response" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')"
 test -n "$document_id"
 
@@ -51,7 +51,7 @@ done
 test "${status:-}" = "needs_review"
 
 snapshot="$(docker compose exec -T postgres psql -U invoiceflow -d invoiceflow -Atc "SELECT rounding_policy_version || ':' || total_minor::text FROM invoice_versions WHERE document_id='${document_id}'")"
-test "$snapshot" = "money-v1:2400"
+test "$snapshot" = "money-v1:8640"
 audit="$(docker compose exec -T postgres psql -U invoiceflow -d invoiceflow -Atc "SELECT count(*) FROM audit_events WHERE document_id='${document_id}' AND action='processing_completed'")"
 test "$audit" = "1"
 
@@ -60,7 +60,7 @@ printf '%s' "$detail" | grep -q '"status":"needs_review"'
 curl --fail --silent --show-error "${base_url}/api/v1/documents/${document_id}/source" >/dev/null
 
 # Save human correction version 2
-curl --fail --silent --show-error -H 'Content-Type: application/json' -d '{"base_version":1,"proposal":{"supplier_name":"Fictional Compose Vendor","invoice_number":"COMPOSE-001","issue_date":"2026-07-23","currency":"USD","subtotal":"20.00","tax_amount":"4.00","total":"24.00","line_items":[{"description":"Fictional service","quantity":"2","unit_price":"10.00","tax_amount":"0.00","total":"20.00"}]}}' "${base_url}/api/v1/documents/${document_id}/human-reviews" | grep -q '"version_number":2'
+curl --fail --silent --show-error -H 'Content-Type: application/json' -d '{"base_version":1,"proposal":{"supplier_name":"Aurora Stationery Co.","invoice_number":"AURORA-1042","issue_date":"2026-06-15","due_date":"2026-07-15","currency":"USD","subtotal":"80.00","tax_amount":"6.40","total":"86.40","line_items":[{"description":"A4 copy paper, 80 gsm (5 reams)","quantity":"5","unit_price":"6.00","tax_amount":"0.00","total":"30.00"},{"description":"Gel ink pens, box of 12","quantity":"3","unit_price":"8.00","tax_amount":"0.00","total":"24.00"},{"description":"Mesh desk organizer","quantity":"2","unit_price":"13.00","tax_amount":"0.00","total":"26.00"}]}}' "${base_url}/api/v1/documents/${document_id}/human-reviews" | grep -q '"version_number":2'
 
 versions="$(docker compose exec -T postgres psql -U invoiceflow -d invoiceflow -Atc "SELECT count(*) FROM invoice_versions WHERE document_id='${document_id}' AND source='human_review'")"
 test "$versions" = "1"
@@ -75,7 +75,7 @@ test "$approved_audit" = "1"
 
 # Stage 5: CSV Export
 curl --fail --silent --show-error "${base_url}/api/v1/documents/${document_id}/export/csv" -o "$tmp_dir/csv.first"
-grep -q "Fictional Compose Vendor" "$tmp_dir/csv.first"
+grep -q "Aurora Stationery Co." "$tmp_dir/csv.first"
 curl --fail --silent --show-error -D "$tmp_dir/csv.headers" "${base_url}/api/v1/documents/${document_id}/export/csv" -o "$tmp_dir/csv.second"
 cmp "$tmp_dir/csv.first" "$tmp_dir/csv.second"
 grep -qi 'X-InvoiceFlow-CSV-Format: csv-v1' "$tmp_dir/csv.headers"
@@ -117,8 +117,10 @@ printf '%s' "$receiver_stats" | grep -q '"validated_count":1'
 printf '%s' "$receiver_stats" | grep -q '"idempotency_count":1'
 printf '%s' "$receiver_stats" | grep -q '"last_idempotency_key":"'"$export_key"'"'
 
-# Test Rejection flow on a 2nd fictional document
-doc2_res="$(curl --fail --silent --show-error -F 'file=@testdata/stage2-fictional-compose2.pdf;type=application/pdf' "${base_url}/api/v1/documents")"
+# Test the OCR path and the rejection flow on a 2nd fictional document: the
+# Meridian image only reaches its configured snapshot if Tesseract read the
+# embedded marker, so the snapshot assertion proves the OCR path end to end.
+doc2_res="$(curl --fail --silent --show-error -F 'file=@testdata/fixture-meridian-supplies.png;type=image/png' "${base_url}/api/v1/documents")"
 doc2_id="$(printf '%s' "$doc2_res" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')"
 test -n "$doc2_id"
 
@@ -131,6 +133,9 @@ while [ "$attempt" -lt 30 ]; do
   attempt=$((attempt + 1))
   sleep 1
 done
+test "${doc2_status:-}" = "needs_review"
+doc2_snapshot="$(docker compose exec -T postgres psql -U invoiceflow -d invoiceflow -Atc "SELECT rounding_policy_version || ':' || total_minor::text FROM invoice_versions WHERE document_id='${doc2_id}'")"
+test "$doc2_snapshot" = "money-v1:6804"
 curl --fail --silent --show-error -H 'Content-Type: application/json' -d '{"confirm":true}' "${base_url}/api/v1/documents/${doc2_id}/reject" >/dev/null
 rejected="$(docker compose exec -T postgres psql -U invoiceflow -d invoiceflow -Atc "SELECT status || ':' || (SELECT count(*)::text FROM audit_events WHERE document_id='${doc2_id}' AND action='document_rejected') FROM documents WHERE id='${doc2_id}'")"
 test "$rejected" = "rejected:1"

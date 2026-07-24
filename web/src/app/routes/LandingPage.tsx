@@ -1,5 +1,6 @@
 import { PageFrame } from '../../components/PageFrame';
 import { ProvenanceStory } from '../../components/ProvenanceStory';
+import { DemoMedia } from '../../components/DemoMedia';
 import { StatusTag } from '../../components/StatusTag';
 import type { ReactElement } from 'react';
 
@@ -59,6 +60,8 @@ export function LandingPage(): ReactElement {
       </section>
 
       <ProvenanceStory />
+
+      <DemoMedia />
 
       <section id="workflow" className="pipeline" aria-labelledby="pipeline-title">
         <div className="section-intro">

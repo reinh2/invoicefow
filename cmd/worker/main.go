@@ -113,14 +113,88 @@ func main() {
 	<-ctx.Done()
 }
 
+func ptr(value string) *string { return &value }
+
+// fakeLine builds one line-item proposal candidate. Line tax is "0.00" so the
+// per-line arithmetic check (quantity*unit + tax == total) holds for the
+// consistent fixtures and is not the source of any warning.
+func fakeLine(description, quantity, unitPrice, total string) extraction.LineItemProposal {
+	return extraction.LineItemProposal{
+		Description: ptr(description), Quantity: ptr(quantity),
+		UnitPrice: ptr(unitPrice), TaxAmount: ptr("0.00"), Total: ptr(total),
+	}
+}
+
+// defaultFakeFixtures configures the offline deterministic extractor. Each entry
+// pairs the committed SHA-256 of a fictional document in testdata/ with the
+// marker embedded in that document and the proposal the extractor returns for
+// it. cmd/worker's TestDefaultFakeFixtures verifies the hashes still match the
+// committed files and that each proposal normalizes to its expected warnings.
+//
+// The synthetic OFFICE-001 file predates the realistic fixtures and is retained
+// only because the landing page illustrates it by name; the demo, smoke test,
+// and captured media use the three realistic documents below.
 func defaultFakeFixtures() []extraction.FakeFixture {
-	supplier, email, number, issueDate, dueDate, currency := "Fictional Office Goods", "billing@example.test", "OFFICE-001", "2026-07-01", "2026-07-31", "USD"
-	subtotal, tax, total, description, quantity, price := "20.00", "4.00", "24.00", "Fictional paper", "2", "10.00"
-	f1 := extraction.FakeFixture{DocumentSHA256: "86ab48c217acdd9f083e8f2d24fc8f547ec8c80a10cd958121a79ffb3f229e99", Marker: "INVOICEFLOW_FIXTURE:OFFICE-001", Proposal: extraction.Proposal{
-		SupplierName: &supplier, SupplierEmail: &email, InvoiceNumber: &number, IssueDate: &issueDate, DueDate: &dueDate, Currency: &currency, Subtotal: &subtotal, TaxAmount: &tax, Total: &total,
-		LineItems: []extraction.LineItemProposal{{Description: &description, Quantity: &quantity, UnitPrice: &price, Total: &subtotal}},
-	}}
-	f2 := f1
-	f2.DocumentSHA256 = "3672ec274f27b1716f58b1517c4a4ac3ee66ab8b07100ed5cd6ffe0a8f68ecdc"
-	return []extraction.FakeFixture{f1, f2}
+	office := extraction.FakeFixture{
+		DocumentSHA256: "86ab48c217acdd9f083e8f2d24fc8f547ec8c80a10cd958121a79ffb3f229e99",
+		Marker:         "INVOICEFLOW_FIXTURE:OFFICE-001",
+		Proposal: extraction.Proposal{
+			SupplierName: ptr("Fictional Office Goods"), SupplierEmail: ptr("billing@example.test"),
+			InvoiceNumber: ptr("OFFICE-001"), IssueDate: ptr("2026-07-01"), DueDate: ptr("2026-07-31"),
+			Currency: ptr("USD"), Subtotal: ptr("20.00"), TaxAmount: ptr("4.00"), Total: ptr("24.00"),
+			LineItems: []extraction.LineItemProposal{fakeLine("Fictional paper", "2", "10.00", "20.00")},
+		},
+	}
+
+	// Realistic text PDF, clean text extraction, no server warnings.
+	aurora := extraction.FakeFixture{
+		DocumentSHA256: "f76e1b0c0a972a83d57528f1ca0810d94d633bfe812899ae0c093d3d9d94ec99",
+		Marker:         "INVOICEFLOW_FIXTURE:AURORA-1042",
+		Proposal: extraction.Proposal{
+			SupplierName: ptr("Aurora Stationery Co."), SupplierEmail: ptr("billing@aurora-stationery.example"),
+			InvoiceNumber: ptr("AURORA-1042"), IssueDate: ptr("2026-06-15"), DueDate: ptr("2026-07-15"),
+			Currency: ptr("USD"), Subtotal: ptr("80.00"), TaxAmount: ptr("6.40"), Total: ptr("86.40"),
+			LineItems: []extraction.LineItemProposal{
+				fakeLine("A4 copy paper, 80 gsm (5 reams)", "5", "6.00", "30.00"),
+				fakeLine("Gel ink pens, box of 12", "3", "8.00", "24.00"),
+				fakeLine("Mesh desk organizer", "2", "13.00", "26.00"),
+			},
+		},
+	}
+
+	// Realistic raster image, exercised through the Tesseract OCR path. The
+	// marker is a bare letters/digits/hyphen token so a pinned Tesseract reads
+	// it verbatim.
+	meridian := extraction.FakeFixture{
+		DocumentSHA256: "f4f911b595ba897de5f4c1d8dd969f9eda53c1f1522ccb45219a03350a975ffd",
+		Marker:         "MERIDIAN-2087",
+		Proposal: extraction.Proposal{
+			SupplierName: ptr("Meridian Office Supplies"), SupplierEmail: ptr("accounts@meridian-supplies.example"),
+			InvoiceNumber: ptr("MERIDIAN-2087"), IssueDate: ptr("2026-06-18"), DueDate: ptr("2026-07-18"),
+			Currency: ptr("USD"), Subtotal: ptr("63.00"), TaxAmount: ptr("5.04"), Total: ptr("68.04"),
+			LineItems: []extraction.LineItemProposal{
+				fakeLine("Ballpoint pens, box of 50", "4", "9.00", "36.00"),
+				fakeLine("Sticky notes, pack of 12", "6", "4.50", "27.00"),
+			},
+		},
+	}
+
+	// Realistic text PDF whose subtotal + tax (250.00 + 47.50 = 297.50) does not
+	// equal its total (290.00), so the normalizer emits exactly one
+	// subtotal_tax_total_mismatch warning for the human to reconcile.
+	cedarline := extraction.FakeFixture{
+		DocumentSHA256: "6767ba11afd4b7e926196d268491c761e08128c1eed3c9a349dfe4b77a5dd945",
+		Marker:         "INVOICEFLOW_FIXTURE:CEDAR-3390",
+		Proposal: extraction.Proposal{
+			SupplierName: ptr("Cedarline Services LLC"), SupplierEmail: ptr("ar@cedarline.example"),
+			InvoiceNumber: ptr("CEDAR-3390"), IssueDate: ptr("2026-06-20"), DueDate: ptr("2026-07-20"),
+			Currency: ptr("USD"), Subtotal: ptr("250.00"), TaxAmount: ptr("47.50"), Total: ptr("290.00"),
+			LineItems: []extraction.LineItemProposal{
+				fakeLine("Managed hosting, monthly", "10", "15.00", "150.00"),
+				fakeLine("On-site support, hours", "4", "25.00", "100.00"),
+			},
+		},
+	}
+
+	return []extraction.FakeFixture{office, aurora, meridian, cedarline}
 }

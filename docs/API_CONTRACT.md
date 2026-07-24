@@ -20,10 +20,10 @@ When `WEB_DIR` names a directory holding a built browser bundle, the API also se
 
 Rules that hold for every static response:
 
-- `/api/`, `/healthz`, and `/readyz` are reserved. An unmatched path below them returns the normal JSON envelope with code `route_not_found`, never HTML.
+- `/api/`, `/healthz`, and `/readyz` are reserved (matched case-insensitively). An unmatched path below them returns the normal JSON envelope with code `route_not_found`, never HTML, **for any HTTP method** — a non-GET request to a mistyped API path is not answered with a bare `405`.
 - A request for a missing file that carries a non-HTML extension returns `404`; it is never answered with the shell.
-- Only `GET` and `HEAD` are served; anything else returns `405` with an `Allow` header.
-- Every response carries `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin`, and a fixed `Content-Security-Policy` with `default-src 'self'`, `base-uri 'none'`, `frame-ancestors 'none'`, and no `unsafe-inline` or `unsafe-eval`.
+- For a non-reserved path, only `GET` and `HEAD` are served; anything else returns `405` with an `Allow: GET, HEAD` header and the standard static security headers.
+- Every response carries `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin`, and a fixed `Content-Security-Policy` with `default-src 'self'`, `object-src 'none'`, `base-uri 'none'`, `frame-ancestors 'none'`, and no `unsafe-inline` or `unsafe-eval`.
 - Content types come from an extension allowlist. Files with any other extension are not loaded into the bundle and cannot be served.
 
 ## Implemented Stage 2 document intake

@@ -53,7 +53,7 @@ var contentTypes = map[string]string{
 // contentSecurityPolicy is deliberately fixed rather than configurable. The
 // bundle is first-party only: it loads nothing from another origin, inlines no
 // script, and evaluates no string as code.
-const contentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self'; font-src 'self'; connect-src 'self'; object-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+const contentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self'; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
 
 type asset struct {
 	body        []byte
@@ -117,12 +117,19 @@ func Load(dir string) (*Bundle, error) {
 		if len(assets) >= MaxFiles {
 			return fmt.Errorf("web bundle exceeds %d files", MaxFiles)
 		}
+		// Cheap early bail on the reported size so a huge file is rejected before
+		// it is read into memory.
 		if total+stat.Size() > MaxTotalBytes {
 			return fmt.Errorf("web bundle exceeds %d bytes", MaxTotalBytes)
 		}
 		body, err := os.ReadFile(name)
 		if err != nil {
 			return err
+		}
+		// Enforce the budget against the bytes actually admitted, so a file that
+		// grew between stat and read cannot slip the accounting past the ceiling.
+		if total+int64(len(body)) > MaxTotalBytes {
+			return fmt.Errorf("web bundle exceeds %d bytes", MaxTotalBytes)
 		}
 		total += int64(len(body))
 		key := path.Clean("/" + filepath.ToSlash(relative))
@@ -151,6 +158,10 @@ func Load(dir string) (*Bundle, error) {
 func (b *Bundle) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			// Route the 405 through writeHeaders so it carries the same CSP and
+			// Referrer-Policy as every other static response; http.Error adds the
+			// text/plain content type and nosniff.
+			b.writeHeaders(w, asset{})
 			w.Header().Set("Allow", "GET, HEAD")
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return

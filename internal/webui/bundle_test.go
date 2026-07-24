@@ -140,7 +140,7 @@ func TestHandlerSetsHardenedResponseHeadersAndRejectsWrites(t *testing.T) {
 		t.Fatalf("nosniff header = %q", got)
 	}
 	policy := shell.Header().Get("Content-Security-Policy")
-	for _, required := range []string{"default-src 'self'", "frame-ancestors 'none'", "base-uri 'none'"} {
+	for _, required := range []string{"default-src 'self'", "frame-ancestors 'none'", "base-uri 'none'", "object-src 'none'"} {
 		if !strings.Contains(policy, required) {
 			t.Fatalf("policy %q is missing %q", policy, required)
 		}
@@ -159,5 +159,16 @@ func TestHandlerSetsHardenedResponseHeadersAndRejectsWrites(t *testing.T) {
 	post := get(t, handler, http.MethodPost, "/")
 	if post.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("POST status = %d, want 405", post.Code)
+	}
+	// The 405 must carry the same hardened headers as every other static
+	// response, not just http.Error's default text/plain + nosniff.
+	if got := post.Header().Get("Content-Security-Policy"); got != contentSecurityPolicy {
+		t.Fatalf("405 Content-Security-Policy = %q", got)
+	}
+	if got := post.Header().Get("Referrer-Policy"); got != "same-origin" {
+		t.Fatalf("405 Referrer-Policy = %q", got)
+	}
+	if got := post.Header().Get("Allow"); got != "GET, HEAD" {
+		t.Fatalf("405 Allow = %q", got)
 	}
 }
