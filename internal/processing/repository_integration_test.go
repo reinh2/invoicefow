@@ -3,11 +3,16 @@
 package processing
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +21,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/reinhlord/invoiceflow/internal/export"
 	"github.com/reinhlord/invoiceflow/internal/extraction"
 	"github.com/reinhlord/invoiceflow/internal/platform"
 )
@@ -434,7 +440,8 @@ func TestHumanReviewVersionsAndRejectionAreImmutableAndAtomic(t *testing.T) {
 	}
 }
 
-func ptrInt64(value int64) *int64 { return &value }
+func ptrInt64(value int64) *int64    { return &value }
+func ptrString(value string) *string { return &value }
 
 type integrationOrphanStorage struct {
 	keys    []string
@@ -462,5 +469,558 @@ func TestReconcileOrphanedObjectsKeepsReferencedOriginals(t *testing.T) {
 	}
 	if len(storage.deleted) != 1 || storage.deleted[0] != "objects/0123456789abcdef0123456789abcdef.pdf" {
 		t.Fatalf("unexpected deletes: %v", storage.deleted)
+	}
+}
+
+func TestStage5ApprovalAndExportFlow(t *testing.T) {
+	repo, pool, ctx := integrationRepository(t)
+	repo.WithWebhookURL("https://example.test/webhook")
+
+	record := integrationRecord(t, "stage5-approval-export")
+	if err := repo.CreateQueuedDocument(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := repo.ClaimReady(ctx, time.Minute)
+	if err != nil || claimed == nil {
+		t.Fatalf("ClaimReady() = %+v, %v", claimed, err)
+	}
+	snapshot := ExtractionSnapshot{
+		Currency: "USD", TotalMinor: ptrInt64(2400), RoundingPolicyVersion: "money-v1",
+		Proposal:   json.RawMessage(`{"supplier_name":"Vendor Inc","total":"24.00"}`),
+		Normalized: json.RawMessage(`{"rounding_policy_version":"money-v1","currency":"USD","total_minor":2400,"supplier_name":"Vendor Inc"}`),
+		Warnings:   json.RawMessage(`[]`), Evidence: json.RawMessage(`[]`), Diagnostics: json.RawMessage(`[]`),
+	}
+	if err := repo.FinishExtraction(ctx, claimed.ID, claimed.LeaseToken, snapshot); err != nil {
+		t.Fatal(err)
+	}
+
+	// Save human review version 2
+	input := HumanReviewInput{
+		SupplierName: ptrString("Vendor Inc Corrected"),
+		Currency:     ptrString("USD"),
+		Total:        ptrString("24.00"),
+		LineItems:    []HumanLineItem{},
+	}
+	v2, err := repo.SaveHumanReview(ctx, record.DocumentID, 1, input, "test-editor")
+	if err != nil || v2 != 2 {
+		t.Fatalf("SaveHumanReview() = %d, %v", v2, err)
+	}
+
+	// Attempting to approve version 1 when version 2 exists MUST fail with ErrStaleReviewVersion
+	if _, err := repo.ApproveDocument(ctx, record.DocumentID, 1, "test-approver"); !errors.Is(err, ErrStaleReviewVersion) {
+		t.Fatalf("approving stale version 1 error = %v, want ErrStaleReviewVersion", err)
+	}
+
+	// Approve current version 2
+	ver, err := repo.ApproveDocument(ctx, record.DocumentID, 2, "test-approver")
+	if err != nil || ver != 2 {
+		t.Fatalf("ApproveDocument() = %d, %v", ver, err)
+	}
+
+	// Cannot approve again
+	if _, err := repo.ApproveDocument(ctx, record.DocumentID, 2, "test-approver"); !errors.Is(err, ErrInvalidDocumentState) {
+		t.Fatalf("second ApproveDocument() = %v, want ErrInvalidDocumentState", err)
+	}
+
+	// Export CSV
+	csvData, err := repo.ExportCSV(ctx, record.DocumentID, "test-exporter")
+	if err != nil {
+		t.Fatalf("ExportCSV() error = %v", err)
+	}
+	if !strings.Contains(string(csvData), "Vendor Inc Corrected") {
+		t.Fatalf("unexpected CSV data: %s", string(csvData))
+	}
+
+	// Repeat CSV export (idempotent)
+	csvData2, err := repo.ExportCSV(ctx, record.DocumentID, "test-exporter")
+	if err != nil || string(csvData2) != string(csvData) {
+		t.Fatalf("idempotent ExportCSV() error = %v", err)
+	}
+
+	// Enqueue Webhook Export
+	exportRec, err := repo.EnqueueWebhookExport(ctx, record.DocumentID, "test-exporter")
+	if err != nil || exportRec.Status != "pending" {
+		t.Fatalf("EnqueueWebhookExport() = %+v, %v", exportRec, err)
+	}
+	exportRecAgain, err := repo.EnqueueWebhookExport(ctx, record.DocumentID, "test-exporter")
+	if err != nil || exportRecAgain.ID != exportRec.ID {
+		t.Fatalf("repeated webhook enqueue = %+v, %v; expected the same durable export record", exportRecAgain, err)
+	}
+
+	// Claim and execute export job
+	jobClaimed, err := repo.ClaimExportReady(ctx, time.Minute)
+	if err != nil || jobClaimed == nil {
+		t.Fatalf("ClaimExportReady() = %+v, %v", jobClaimed, err)
+	}
+	details, err := repo.LoadExportJobDetails(ctx, jobClaimed.ID)
+	if err != nil || details.DestinationRef != "server:webhook:v1" || details.DestinationLabel != "Server-configured webhook" {
+		t.Fatalf("LoadExportJobDetails() = %+v, %v", details, err)
+	}
+	if details.IdempotencyKey != exportRec.IdempotencyKey || exportRecAgain.IdempotencyKey != exportRec.IdempotencyKey {
+		t.Fatalf("persisted idempotency key changed: record=%q repeated=%q details=%q", exportRec.IdempotencyKey, exportRecAgain.IdempotencyKey, details.IdempotencyKey)
+	}
+	if err := repo.FinishExportSuccess(ctx, jobClaimed.ID, jobClaimed.LeaseToken, details.ExportID, "test-worker"); err != nil {
+		t.Fatalf("FinishExportSuccess() error = %v", err)
+	}
+
+	// Check final document detail
+	detail, err := repo.GetReviewDocument(ctx, record.DocumentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Status != "exported" || detail.ApprovedVersionNumber == nil || *detail.ApprovedVersionNumber != 2 || len(detail.Exports) == 0 {
+		t.Fatalf("final GetReviewDocument() = %+v", detail)
+	}
+
+	var approvedAudits, csvAudits, exportEnqueuedAudits, webhookExportedAudits int
+	if err := pool.QueryRow(ctx, `SELECT
+		(SELECT count(*) FROM audit_events WHERE document_id=$1 AND action='document_approved'),
+		(SELECT count(*) FROM audit_events WHERE document_id=$1 AND action='csv_exported'),
+		(SELECT count(*) FROM audit_events WHERE document_id=$1 AND action='export_enqueued'),
+		(SELECT count(*) FROM audit_events WHERE document_id=$1 AND action='webhook_exported')`, record.DocumentID).Scan(&approvedAudits, &csvAudits, &exportEnqueuedAudits, &webhookExportedAudits); err != nil {
+		t.Fatal(err)
+	}
+	if approvedAudits != 1 || csvAudits != 1 || exportEnqueuedAudits != 1 || webhookExportedAudits != 1 {
+		t.Fatalf("audits: approved=%d csv=%d enqueued=%d webhook=%d", approvedAudits, csvAudits, exportEnqueuedAudits, webhookExportedAudits)
+	}
+}
+
+func TestExportHistoryDatabaseFailureIsReturned(t *testing.T) {
+	repo, pool, ctx := integrationRepository(t)
+	record := integrationRecord(t, "export-history-db-failure")
+	if err := repo.CreateQueuedDocument(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := repo.ClaimReady(ctx, time.Minute)
+	if err != nil || claimed == nil {
+		t.Fatalf("claim processing job: %+v %v", claimed, err)
+	}
+	if err := repo.FinishExtraction(ctx, claimed.ID, claimed.LeaseToken, ExtractionSnapshot{Currency: "USD", TotalMinor: ptrInt64(100), RoundingPolicyVersion: "money-v1", Proposal: json.RawMessage(`{}`), Normalized: json.RawMessage(`{"currency":"USD","total_minor":100` + `}`), Warnings: json.RawMessage(`[]`), Evidence: json.RawMessage(`[]`), Diagnostics: json.RawMessage(`[]`)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `ALTER TABLE exports RENAME TO exports_unavailable`); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = pool.Exec(context.Background(), `ALTER TABLE exports_unavailable RENAME TO exports`) }()
+	if _, err := repo.GetReviewDocument(ctx, record.DocumentID); err == nil {
+		t.Fatal("GetReviewDocument returned partial success after export history query failed")
+	}
+}
+
+func TestExportCompositeForeignKeyRejectsCrossDocumentVersion(t *testing.T) {
+	repo, pool, ctx := integrationRepository(t)
+	first, second := integrationRecord(t, "export-cross-document-first"), integrationRecord(t, "export-cross-document-second")
+	for _, record := range []IntakeRecord{first, second} {
+		if err := repo.CreateQueuedDocument(ctx, record); err != nil {
+			t.Fatal(err)
+		}
+		claimed, err := repo.ClaimReady(ctx, time.Minute)
+		if err != nil || claimed == nil {
+			t.Fatalf("claim processing job: %+v %v", claimed, err)
+		}
+		if err := repo.FinishExtraction(ctx, claimed.ID, claimed.LeaseToken, ExtractionSnapshot{Currency: "USD", TotalMinor: ptrInt64(100), RoundingPolicyVersion: "money-v1", Proposal: json.RawMessage(`{}`), Normalized: json.RawMessage(`{"currency":"USD","total_minor":100` + `}`), Warnings: json.RawMessage(`[]`), Evidence: json.RawMessage(`[]`), Diagnostics: json.RawMessage(`[]`)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var firstVersion, secondVersion string
+	if err := pool.QueryRow(ctx, `SELECT id FROM invoice_versions WHERE document_id=$1`, first.DocumentID).Scan(&firstVersion); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT id FROM invoice_versions WHERE document_id=$1`, second.DocumentID).Scan(&secondVersion); err != nil {
+		t.Fatal(err)
+	}
+	jobID, exportID := mustID(t), mustID(t)
+	_, err := pool.Exec(ctx, `INSERT INTO jobs (id,document_id,job_type,status,attempts,max_attempts,next_attempt_at,idempotency_key) VALUES ($1,$2,'export_document','ready',0,5,now(),$3)`, jobID, first.DocumentID, "cross-document-job:"+jobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO exports (id,document_id,version_id,export_type,status,idempotency_key,destination_ref,destination_label,job_id) VALUES ($1,$2,$3,'webhook','pending',$4,'server:webhook:v1','Server-configured webhook',$5)`, exportID, first.DocumentID, secondVersion, "cross-document-export:"+exportID, jobID); err == nil {
+		t.Fatal("cross-document export version was accepted")
+	}
+	_ = firstVersion
+}
+
+func TestExportForeignKeyRejectsAnotherVersionOfTheSameDocument(t *testing.T) {
+	repo, pool, ctx := integrationRepository(t)
+	record := integrationRecord(t, "export-unapproved-version")
+	if err := repo.CreateQueuedDocument(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := repo.ClaimReady(ctx, time.Minute)
+	if err != nil || claimed == nil {
+		t.Fatalf("claim processing job: %+v %v", claimed, err)
+	}
+	if err := repo.FinishExtraction(ctx, claimed.ID, claimed.LeaseToken, ExtractionSnapshot{Currency: "USD", TotalMinor: ptrInt64(100), RoundingPolicyVersion: "money-v1", Proposal: json.RawMessage(`{}`), Normalized: json.RawMessage(`{"currency":"USD","total_minor":100}`), Warnings: json.RawMessage(`[]`), Evidence: json.RawMessage(`[]`), Diagnostics: json.RawMessage(`[]`)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.SaveHumanReview(ctx, record.DocumentID, 1, HumanReviewInput{Currency: ptrString("USD"), Total: ptrString("1.00"), LineItems: []HumanLineItem{}}, "test-editor"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.ApproveDocument(ctx, record.DocumentID, 2, "test-approver"); err != nil {
+		t.Fatal(err)
+	}
+	var firstVersion, approvedVersion string
+	if err := pool.QueryRow(ctx, `SELECT id FROM invoice_versions WHERE document_id=$1 AND version_number=1`, record.DocumentID).Scan(&firstVersion); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT approved_version_id FROM documents WHERE id=$1`, record.DocumentID).Scan(&approvedVersion); err != nil {
+		t.Fatal(err)
+	}
+	exportID := mustID(t)
+	if _, err := pool.Exec(ctx, `INSERT INTO exports (id,document_id,version_id,export_type,status,idempotency_key,destination_ref,destination_label) VALUES ($1,$2,$3,'webhook','pending',$4,'server:webhook:v1','Server-configured webhook')`, exportID, record.DocumentID, firstVersion, "same-document-unapproved:"+exportID); err == nil {
+		t.Fatal("same-document unapproved export version was accepted")
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO exports (id,document_id,version_id,export_type,status,idempotency_key,destination_ref,destination_label) VALUES ($1,$2,$3,'webhook','pending',$4,'server:webhook:v1','Server-configured webhook')`, exportID, record.DocumentID, approvedVersion, "same-document-approved:"+exportID); err != nil {
+		t.Fatalf("approved export version was rejected: %v", err)
+	}
+}
+
+func mustID(t *testing.T) string {
+	t.Helper()
+	id, err := NewID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func TestExportLeaseRecoveryDoesNotTouchApprovedDocument(t *testing.T) {
+	repo, pool, ctx := integrationRepository(t)
+	repo.WithWebhookURL("https://user:password@example.test/hook?token=secret")
+	record := integrationRecord(t, "export-lease-recovery")
+	if err := repo.CreateQueuedDocument(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := repo.ClaimReady(ctx, time.Minute)
+	if err != nil || claimed == nil {
+		t.Fatalf("claim processing job: %+v %v", claimed, err)
+	}
+	if err := repo.FinishExtraction(ctx, claimed.ID, claimed.LeaseToken, ExtractionSnapshot{Currency: "USD", TotalMinor: ptrInt64(100), RoundingPolicyVersion: "money-v1", Proposal: json.RawMessage(`{}`), Normalized: json.RawMessage(`{"currency":"USD","total_minor":100}`), Warnings: json.RawMessage(`[]`), Evidence: json.RawMessage(`[]`), Diagnostics: json.RawMessage(`[]`)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.ApproveDocument(ctx, record.DocumentID, 1, "test-approver"); err != nil {
+		t.Fatal(err)
+	}
+	exportRecord, err := repo.EnqueueWebhookExport(ctx, record.DocumentID, "test-exporter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	exportJob, err := repo.ClaimExportReady(ctx, time.Minute)
+	if err != nil || exportJob == nil {
+		t.Fatalf("claim export job: %+v %v", exportJob, err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE jobs SET leased_until=now()-interval '1 second' WHERE id=$1`, exportJob.ID); err != nil {
+		t.Fatal(err)
+	}
+	if recovered, err := repo.RecoverExpiredLeases(ctx); err != nil || recovered != 1 {
+		t.Fatalf("RecoverExpiredLeases()=%d, %v", recovered, err)
+	}
+	var jobStatus, exportStatus, documentStatus, outcome string
+	var attempts, auditCount int
+	if err := pool.QueryRow(ctx, `SELECT j.status,e.status,d.status,ja.outcome,j.attempts,(SELECT count(*) FROM audit_events WHERE document_id=$1 AND action='export_retry_scheduled') FROM jobs j JOIN exports e ON e.job_id=j.id JOIN documents d ON d.id=j.document_id JOIN job_attempts ja ON ja.job_id=j.id WHERE j.id=$2`, record.DocumentID, exportJob.ID).Scan(&jobStatus, &exportStatus, &documentStatus, &outcome, &attempts, &auditCount); err != nil {
+		t.Fatal(err)
+	}
+	if jobStatus != "ready" || exportStatus != "retrying" || documentStatus != "approved" || outcome != "retryable_failure" || attempts != 1 || auditCount != 1 {
+		t.Fatalf("recovery job=%q export=%q document=%q outcome=%q attempts=%d audits=%d", jobStatus, exportStatus, documentStatus, outcome, attempts, auditCount)
+	}
+	reclaimed, err := repo.ClaimExportReady(ctx, time.Minute)
+	if err != nil || reclaimed == nil || reclaimed.Attempt != 2 {
+		t.Fatalf("restarted worker claim=%+v err=%v, want attempt 2", reclaimed, err)
+	}
+	if err := repo.FinishExportSuccess(ctx, reclaimed.ID, reclaimed.LeaseToken, exportRecord.ID, "test-worker"); err != nil {
+		t.Fatal(err)
+	}
+	var successCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_events WHERE document_id=$1 AND action='webhook_exported'`, record.DocumentID).Scan(&successCount); err != nil {
+		t.Fatal(err)
+	}
+	if successCount != 1 {
+		t.Fatalf("webhook success audit count=%d, want 1", successCount)
+	}
+}
+
+func TestExportLeaseRecoveryDeadLettersWithoutFailingDocument(t *testing.T) {
+	repo, pool, ctx := integrationRepository(t)
+	repo.WithWebhookURL("https://example.test/webhook")
+	record := integrationRecord(t, "export-lease-dead-letter")
+	if err := repo.CreateQueuedDocument(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	processingJob, err := repo.ClaimReady(ctx, time.Minute)
+	if err != nil || processingJob == nil {
+		t.Fatalf("claim processing job: %+v %v", processingJob, err)
+	}
+	if err := repo.FinishExtraction(ctx, processingJob.ID, processingJob.LeaseToken, ExtractionSnapshot{Currency: "USD", TotalMinor: ptrInt64(100), RoundingPolicyVersion: "money-v1", Proposal: json.RawMessage(`{}`), Normalized: json.RawMessage(`{"currency":"USD","total_minor":100}`), Warnings: json.RawMessage(`[]`), Evidence: json.RawMessage(`[]`), Diagnostics: json.RawMessage(`[]`)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.ApproveDocument(ctx, record.DocumentID, 1, "test-approver"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.EnqueueWebhookExport(ctx, record.DocumentID, "test-exporter"); err != nil {
+		t.Fatal(err)
+	}
+	exportJob, err := repo.ClaimExportReady(ctx, time.Minute)
+	if err != nil || exportJob == nil {
+		t.Fatalf("claim export job: %+v %v", exportJob, err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE jobs SET attempts=max_attempts,leased_until=now()-interval '1 second' WHERE id=$1`, exportJob.ID); err != nil {
+		t.Fatal(err)
+	}
+	if recovered, err := repo.RecoverExpiredLeases(ctx); err != nil || recovered != 1 {
+		t.Fatalf("RecoverExpiredLeases()=%d, %v", recovered, err)
+	}
+	var jobStatus, exportStatus, documentStatus, auditAction string
+	if err := pool.QueryRow(ctx, `SELECT j.status,e.status,d.status,(SELECT action FROM audit_events WHERE document_id=$1 AND action='export_dead_lettered') FROM jobs j JOIN exports e ON e.job_id=j.id JOIN documents d ON d.id=j.document_id WHERE j.id=$2`, record.DocumentID, exportJob.ID).Scan(&jobStatus, &exportStatus, &documentStatus, &auditAction); err != nil {
+		t.Fatal(err)
+	}
+	if jobStatus != "dead_letter" || exportStatus != "dead_letter" || documentStatus != "approved" || auditAction != "export_dead_lettered" {
+		t.Fatalf("dead-letter job=%q export=%q document=%q audit=%q", jobStatus, exportStatus, documentStatus, auditAction)
+	}
+}
+
+func TestWebhookDestinationNeverLeavesServerOwnedURL(t *testing.T) {
+	repo, pool, ctx := integrationRepository(t)
+	secretURL := "https://user:password@example.test/private?token=secret"
+	repo.WithWebhookURL(secretURL)
+	record := integrationRecord(t, "destination-redaction")
+	if err := repo.CreateQueuedDocument(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	processingJob, err := repo.ClaimReady(ctx, time.Minute)
+	if err != nil || processingJob == nil {
+		t.Fatalf("claim processing job: %+v %v", processingJob, err)
+	}
+	if err := repo.FinishExtraction(ctx, processingJob.ID, processingJob.LeaseToken, ExtractionSnapshot{Currency: "USD", TotalMinor: ptrInt64(100), RoundingPolicyVersion: "money-v1", Proposal: json.RawMessage(`{}`), Normalized: json.RawMessage(`{"currency":"USD","total_minor":100}`), Warnings: json.RawMessage(`[]`), Evidence: json.RawMessage(`[]`), Diagnostics: json.RawMessage(`[]`)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.ApproveDocument(ctx, record.DocumentID, 1, "test-approver"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.EnqueueWebhookExport(ctx, record.DocumentID, "test-exporter"); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := repo.GetReviewDocument(ctx, record.DocumentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serialized, _ := json.Marshal(detail)
+	if strings.Contains(string(serialized), secretURL) || strings.Contains(string(serialized), "password") || strings.Contains(string(serialized), "token=secret") || strings.Contains(string(serialized), `"version_id"`) {
+		t.Fatalf("server-owned destination leaked through detail: %s", serialized)
+	}
+	if len(detail.Exports) != 1 || detail.Exports[0].VersionNumber != 1 || detail.Exports[0].DestinationRef != "server:webhook:v1" || detail.Exports[0].DestinationLabel != "Server-configured webhook" {
+		t.Fatalf("unsafe export projection: %+v", detail.Exports)
+	}
+	var exportsDestination, auditPayload []byte
+	if err := pool.QueryRow(ctx, `SELECT e.destination_ref,a.payload FROM exports e JOIN audit_events a ON a.document_id=e.document_id WHERE e.document_id=$1 AND a.action='export_enqueued'`, record.DocumentID).Scan(&exportsDestination, &auditPayload); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(exportsDestination), "http") || strings.Contains(string(auditPayload), "token=secret") || strings.Contains(string(auditPayload), "password") {
+		t.Fatalf("unsafe destination persisted: export=%s audit=%s", exportsDestination, auditPayload)
+	}
+}
+
+type webhookRequest struct {
+	IdempotencyKey string
+	Body           []byte
+}
+
+type webhookReceiver struct {
+	statuses []int
+	requests []webhookRequest
+	mu       sync.Mutex
+}
+
+func (receiver *webhookReceiver) serveHTTP(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "receiver could not read request", http.StatusInternalServerError)
+		return
+	}
+	receiver.mu.Lock()
+	defer receiver.mu.Unlock()
+	receiver.requests = append(receiver.requests, webhookRequest{IdempotencyKey: r.Header.Get("X-InvoiceFlow-Idempotency-Key"), Body: body})
+	statusIndex := len(receiver.requests) - 1
+	if statusIndex >= len(receiver.statuses) {
+		statusIndex = len(receiver.statuses) - 1
+	}
+	status := receiver.statuses[statusIndex]
+	w.WriteHeader(status)
+}
+
+func (receiver *webhookReceiver) recordedRequests() []webhookRequest {
+	receiver.mu.Lock()
+	defer receiver.mu.Unlock()
+	return append([]webhookRequest(nil), receiver.requests...)
+}
+
+type receiverRoundTripper struct{ target *url.URL }
+
+func (roundTripper receiverRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	clone := request.Clone(request.Context())
+	clone.URL = roundTripper.target
+	clone.Host = roundTripper.target.Host
+	clone.RequestURI = ""
+	return http.DefaultTransport.RoundTrip(clone)
+}
+
+func webhookWorkerForReceiver(t *testing.T, repo *Repository, serverURL string) Worker {
+	t.Helper()
+	target, err := url.Parse(serverURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender := export.NewControlledWebhookSender("integration-webhook-secret", export.ControlledWebhookDestination)
+	sender.Client = &http.Client{Transport: receiverRoundTripper{target: target}, Timeout: time.Second}
+	return Worker{Repository: repo, Lease: time.Minute, RetryDelay: 0, WebhookSender: sender}
+}
+
+func createApprovedWebhookExport(t *testing.T, repo *Repository, ctx context.Context) (IntakeRecord, ExportRecord) {
+	t.Helper()
+	repo.WithWebhookDestination(true, "server:webhook:v1", "Server-configured webhook")
+	record := integrationRecord(t, "approved-webhook-export")
+	if err := repo.CreateQueuedDocument(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	processingJob, err := repo.ClaimReady(ctx, time.Minute)
+	if err != nil || processingJob == nil {
+		t.Fatalf("claim processing job: %+v %v", processingJob, err)
+	}
+	snapshot := ExtractionSnapshot{
+		Currency: "USD", TotalMinor: ptrInt64(100), RoundingPolicyVersion: "money-v1",
+		Proposal:   json.RawMessage(`{"supplier_name":"Fictional Vendor"}`),
+		Normalized: json.RawMessage(`{"rounding_policy_version":"money-v1","currency":"USD","total_minor":100,"supplier_name":"Fictional Vendor"}`),
+		Warnings:   json.RawMessage(`[]`), Evidence: json.RawMessage(`[]`), Diagnostics: json.RawMessage(`[]`),
+	}
+	if err := repo.FinishExtraction(ctx, processingJob.ID, processingJob.LeaseToken, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.ApproveDocument(ctx, record.DocumentID, 1, "test-approver"); err != nil {
+		t.Fatal(err)
+	}
+	exportRecord, err := repo.EnqueueWebhookExport(ctx, record.DocumentID, "test-exporter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return record, exportRecord
+}
+
+func TestExportWorkerRetries429And5xxWithStablePayloadThenSucceeds(t *testing.T) {
+	repo, pool, ctx := integrationRepository(t)
+	record, exportRecord := createApprovedWebhookExport(t, repo, ctx)
+	receiver := &webhookReceiver{statuses: []int{http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusNoContent}}
+	server := httptest.NewServer(http.HandlerFunc(receiver.serveHTTP))
+	t.Cleanup(server.Close)
+	worker := webhookWorkerForReceiver(t, repo, server.URL)
+
+	for attempt := 1; attempt <= 3; attempt++ {
+		worked, err := worker.RunExportOnce(ctx)
+		if err != nil || !worked {
+			t.Fatalf("RunExportOnce attempt %d worked=%t err=%v", attempt, worked, err)
+		}
+		var documentStatus, exportStatus string
+		var jobAttempts, exportAttempts int
+		var jobNext, exportNext *time.Time
+		if err := pool.QueryRow(ctx, `SELECT d.status,e.status,j.attempts,e.attempts,j.next_attempt_at,e.next_attempt_at FROM documents d JOIN jobs j ON j.document_id=d.id JOIN exports e ON e.job_id=j.id WHERE e.id=$1`, exportRecord.ID).Scan(&documentStatus, &exportStatus, &jobAttempts, &exportAttempts, &jobNext, &exportNext); err != nil {
+			t.Fatal(err)
+		}
+		if jobAttempts != attempt || exportAttempts != attempt {
+			t.Fatalf("attempt %d persisted job=%d export=%d", attempt, jobAttempts, exportAttempts)
+		}
+		if attempt < 3 {
+			if documentStatus != "approved" || exportStatus != "retrying" || jobNext == nil || exportNext == nil {
+				t.Fatalf("transient attempt %d document=%q export=%q job_next=%v export_next=%v", attempt, documentStatus, exportStatus, jobNext, exportNext)
+			}
+			continue
+		}
+		if documentStatus != "exported" || exportStatus != "succeeded" || jobNext != nil || exportNext != nil {
+			t.Fatalf("success document=%q export=%q job_next=%v export_next=%v", documentStatus, exportStatus, jobNext, exportNext)
+		}
+	}
+
+	requests := receiver.recordedRequests()
+	if len(requests) != 3 {
+		t.Fatalf("receiver requests=%d, want 3", len(requests))
+	}
+	for index, request := range requests {
+		if request.IdempotencyKey != exportRecord.IdempotencyKey || !bytes.Equal(request.Body, requests[0].Body) {
+			t.Fatalf("request %d did not retain canonical idempotency payload", index+1)
+		}
+	}
+	var retryAudits, successAudits, deadLetterAudits int
+	if err := pool.QueryRow(ctx, `SELECT
+		(SELECT count(*) FROM audit_events WHERE document_id=$1 AND action='export_retry_scheduled'),
+		(SELECT count(*) FROM audit_events WHERE document_id=$1 AND action='webhook_exported'),
+		(SELECT count(*) FROM audit_events WHERE document_id=$1 AND action='export_dead_lettered')`, record.DocumentID).Scan(&retryAudits, &successAudits, &deadLetterAudits); err != nil {
+		t.Fatal(err)
+	}
+	if retryAudits != 2 || successAudits != 1 || deadLetterAudits != 0 {
+		t.Fatalf("audit counts retry=%d success=%d dead_letter=%d", retryAudits, successAudits, deadLetterAudits)
+	}
+}
+
+func TestExportWorkerDeadLettersRetryableFailuresAtAttemptLimit(t *testing.T) {
+	repo, pool, ctx := integrationRepository(t)
+	record, exportRecord := createApprovedWebhookExport(t, repo, ctx)
+	receiver := &webhookReceiver{statuses: []int{http.StatusTooManyRequests}}
+	server := httptest.NewServer(http.HandlerFunc(receiver.serveHTTP))
+	t.Cleanup(server.Close)
+	worker := webhookWorkerForReceiver(t, repo, server.URL)
+
+	for attempt := 1; attempt <= 5; attempt++ {
+		worked, err := worker.RunExportOnce(ctx)
+		if err != nil || !worked {
+			t.Fatalf("RunExportOnce attempt %d worked=%t err=%v", attempt, worked, err)
+		}
+	}
+	if worked, err := worker.RunExportOnce(ctx); err != nil || worked {
+		t.Fatalf("RunExportOnce after dead-letter worked=%t err=%v", worked, err)
+	}
+	var jobStatus, exportStatus, documentStatus, jobError, exportError string
+	var jobAttempts, exportAttempts, retryAudits, deadLetterAudits, retryOutcomes, permanentOutcomes int
+	var jobNext, exportNext *time.Time
+	if err := pool.QueryRow(ctx, `SELECT
+		j.status,e.status,d.status,COALESCE(j.last_error,''),COALESCE(e.error_summary,''),j.attempts,e.attempts,j.next_attempt_at,e.next_attempt_at,
+		(SELECT count(*) FROM audit_events WHERE document_id=$1 AND action='export_retry_scheduled'),
+		(SELECT count(*) FROM audit_events WHERE document_id=$1 AND action='export_dead_lettered'),
+		(SELECT count(*) FROM job_attempts WHERE job_id=j.id AND outcome='retryable_failure'),
+		(SELECT count(*) FROM job_attempts WHERE job_id=j.id AND outcome='permanent_failure')
+		FROM jobs j JOIN exports e ON e.job_id=j.id JOIN documents d ON d.id=j.document_id WHERE e.id=$2`, record.DocumentID, exportRecord.ID).Scan(&jobStatus, &exportStatus, &documentStatus, &jobError, &exportError, &jobAttempts, &exportAttempts, &jobNext, &exportNext, &retryAudits, &deadLetterAudits, &retryOutcomes, &permanentOutcomes); err != nil {
+		t.Fatal(err)
+	}
+	if jobStatus != "dead_letter" || exportStatus != "dead_letter" || documentStatus != "approved" || jobAttempts != 5 || exportAttempts != 5 || jobNext != nil || exportNext != nil || jobError != "webhook delivery temporary failure" || exportError != "webhook delivery failed (exhausted retries)" || retryAudits != 4 || deadLetterAudits != 1 || retryOutcomes != 4 || permanentOutcomes != 1 {
+		t.Fatalf("dead-letter job=%q export=%q document=%q attempts=%d/%d next=%v/%v errors=%q/%q audits=%d/%d outcomes=%d/%d", jobStatus, exportStatus, documentStatus, jobAttempts, exportAttempts, jobNext, exportNext, jobError, exportError, retryAudits, deadLetterAudits, retryOutcomes, permanentOutcomes)
+	}
+	requests := receiver.recordedRequests()
+	if len(requests) != 5 {
+		t.Fatalf("receiver requests=%d, want 5", len(requests))
+	}
+	for index, request := range requests {
+		if request.IdempotencyKey != exportRecord.IdempotencyKey || !bytes.Equal(request.Body, requests[0].Body) {
+			t.Fatalf("request %d did not retain canonical idempotency payload", index+1)
+		}
+	}
+}
+
+func TestExportWorkerDeadLettersPermanent4xxWithoutChangingApprovedDocument(t *testing.T) {
+	repo, pool, ctx := integrationRepository(t)
+	record, exportRecord := createApprovedWebhookExport(t, repo, ctx)
+	receiver := &webhookReceiver{statuses: []int{http.StatusBadRequest}}
+	server := httptest.NewServer(http.HandlerFunc(receiver.serveHTTP))
+	t.Cleanup(server.Close)
+	worked, err := webhookWorkerForReceiver(t, repo, server.URL).RunExportOnce(ctx)
+	if err != nil || !worked {
+		t.Fatalf("RunExportOnce worked=%t err=%v", worked, err)
+	}
+	var jobStatus, exportStatus, documentStatus, jobError, exportError string
+	var jobAttempts, exportAttempts, deadLetterAudits int
+	var jobNext, exportNext *time.Time
+	if err := pool.QueryRow(ctx, `SELECT
+		j.status,e.status,d.status,COALESCE(j.last_error,''),COALESCE(e.error_summary,''),j.attempts,e.attempts,j.next_attempt_at,e.next_attempt_at,
+		(SELECT count(*) FROM audit_events WHERE document_id=$1 AND action='export_dead_lettered')
+		FROM jobs j JOIN exports e ON e.job_id=j.id JOIN documents d ON d.id=j.document_id WHERE e.id=$2`, record.DocumentID, exportRecord.ID).Scan(&jobStatus, &exportStatus, &documentStatus, &jobError, &exportError, &jobAttempts, &exportAttempts, &jobNext, &exportNext, &deadLetterAudits); err != nil {
+		t.Fatal(err)
+	}
+	if jobStatus != "dead_letter" || exportStatus != "dead_letter" || documentStatus != "approved" || jobAttempts != 1 || exportAttempts != 1 || jobNext != nil || exportNext != nil || jobError != "webhook delivery failed (permanent)" || exportError != "webhook delivery failed (permanent)" || deadLetterAudits != 1 {
+		t.Fatalf("permanent job=%q export=%q document=%q attempts=%d/%d next=%v/%v errors=%q/%q audits=%d", jobStatus, exportStatus, documentStatus, jobAttempts, exportAttempts, jobNext, exportNext, jobError, exportError, deadLetterAudits)
 	}
 }

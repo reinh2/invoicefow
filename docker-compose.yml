@@ -21,6 +21,10 @@ services:
       API_ADDR: 0.0.0.0:8080
       MIGRATIONS_DIR: /app/db/migrations
       STORAGE_DIR: /data
+      WEB_DIR: /app/web
+      WEBHOOK_URL: http://receiver:8090/webhook
+      WEBHOOK_MODE: controlled
+      WEBHOOK_SECRET: local-demo-webhook-secret
     depends_on:
       postgres:
         condition: service_healthy
@@ -35,11 +39,23 @@ services:
       DATABASE_URL: postgres://invoiceflow:invoiceflow@postgres:5432/invoiceflow?sslmode=disable
       MIGRATIONS_DIR: /app/db/migrations
       STORAGE_DIR: /data
+      WEBHOOK_URL: http://receiver:8090/webhook
+      WEBHOOK_MODE: controlled
+      WEBHOOK_SECRET: local-demo-webhook-secret
+    volumes:
+      - document_data:/data
     depends_on:
       postgres:
         condition: service_healthy
-    volumes:
-      - document_data:/data
+      receiver:
+        condition: service_started
+  receiver:
+    build: .
+    command: ["/app/invoiceflow-receiver"]
+    environment:
+      WEBHOOK_SECRET: local-demo-webhook-secret
+    ports:
+      - "127.0.0.1:${RECEIVER_HOST_PORT:-8090}:8090"
 volumes:
   postgres_data:
   document_data:

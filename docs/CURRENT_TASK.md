@@ -2,42 +2,58 @@
 
 ## State
 
-**Stage 4 — immutable human review and rejection is complete.** It extends the uncommitted Stage 3 foundation and deliberately stops before approval, CSV/webhook export, payment, product media, and final landing-scroll work.
+Stage 6 — honest landing page, product story, and static application delivery — is **partially complete**. Items 1–3 and 5 below are implemented and covered by tests; item 4 is **not done** and blocks the stage. The governing decision is ADR-013.
 
-## Implemented through Stage 4
+| # | Stage 6 item | State |
+| --- | --- | --- |
+| 1 | Serve one pre-built static bundle from the API behind `WEB_DIR` | Done |
+| 2 | Replace the stale foundation-stage landing copy with shipped behavior | Done |
+| 3 | Scroll-driven provenance scene with equivalent reduced-motion path | Done |
+| 4 | Factual media asset captured from the running demo (ADR-005) | **Not done** |
+| 5 | Reformat and split the CSS layer by surface | Done |
 
-- Accepted ADRs pin the local toolchain, licenses, hostile-PDF behavior, data/process limits, strict provider contract/evidence semantics, and the `money-v1` exact normalization policy.
-- The worker claims durable process jobs, reopens server-owned originals, validates PDFs with `pdfinfo`, extracts bounded text with `pdftotext`, falls back through the OCR port when text is absent, invokes the deterministic no-network fake extractor, and atomically persists an immutable snapshot before moving the document to `needs_review`.
-- The default `TesseractOCR` adapter supports revalidated JPEG/PNG inputs. PDF raster OCR is intentionally deferred; a scanned PDF has a stable permanent failure rather than a fabricated result.
-- Proposal JSON has a narrow, unknown-field-rejecting decoder. Evidence is persisted only when its excerpt occurs on the declared source page; diagnostics are converted to safe bounded values.
-- Server normalization uses exact rationals and `money-v1` ties-to-even rounding for USD/EUR/GBP/RUB/JPY, strict ISO dates, bounded quantities, and server-generated arithmetic warnings. Raw candidate and normalized data, warnings, evidence, diagnostics, and policy version are immutable database snapshot fields.
-- Docker Compose now carries the pinned Poppler/Tesseract runtime. `scripts/compose-smoke.sh` verifies upload → worker extraction → immutable version/`needs_review` against the fictional embedded-text fixture.
-- `GET /api/v1/documents/{id}` is a bounded, no-store document-detail representation: it returns up to 100 immutable versions, their proposal/normalized/warning/evidence/diagnostic fields, exact-decimal editable values, and up to 100 audit events without leaking original filenames, storage keys, paths, or hashes.
-- `GET /api/v1/documents/{id}/source` looks up the server-owned original and streams only its stored PDF/JPEG/PNG media bytes with inline/no-store/nosniff headers.
-- A strict human-edit endpoint accepts candidate metadata, dates, currency, money, and line items only. The server applies the existing `money-v1` policy and current normalizer, locks the document to serialize version allocation, atomically appends a `human_review` snapshot and `human_review_saved` audit, and never mutates extraction data. Historical extraction warnings remain preserved in the extraction snapshot; the human version receives a fresh server-generated warning set and carries source evidence/sanitized diagnostics forward.
-- A confirmed reject endpoint atomically transitions only `needs_review` to terminal `rejected` and appends `document_rejected`; it preserves source and all immutable snapshots.
-- `/app/documents/{id}` is an accessible responsive split review UI with the original on the left and proposal/edit form, line items, warnings, evidence, diagnostics, and audit history on the right. It has real loading, empty, failed/reload, unsaved-change, save conflict/error, confirmation, and rejected read-only states.
+What is implemented:
+
+- `internal/webui` loads one bundle into memory at startup under file-count, total-byte, and extension-allowlist bounds, and answers every request from an exact map lookup, so no request string reaches a filesystem call. `WEB_DIR` empty or absent keeps the process API-only, exactly as through Stage 5.
+- The bundle handler is registered last and only as `GET /`. `/api/`, `/healthz`, and `/readyz` are reserved and return the JSON envelope with code `route_not_found` rather than HTML. Missing non-HTML assets return 404 instead of the shell. Non-`GET`/`HEAD` returns 405. Both health routes are now method-scoped so this fallback is unambiguous.
+- Every static response carries `nosniff`, `Referrer-Policy: same-origin`, and a fixed first-party CSP with no `unsafe-inline` or `unsafe-eval`. Hashed assets are immutable-cached; the shell is `no-store`.
+- The Dockerfile builds `web/` in a pinned Node stage and Compose sets `WEB_DIR=/app/web`, so `docker compose up` now serves the real product on one loopback port.
+- `/` describes only shipped behavior, with the fictional `OFFICE-001` values the offline extractor is actually configured with, real server warning codes, and an explicit "what this deliberately does not do" section. There is no metric, customer, accuracy, or compliance claim.
+- The provenance story renders every state as readable content at all times; `IntersectionObserver` only moves visual emphasis, so reduced-motion and no-observer paths present the same information.
+- The CSS layer is split into `tokens`, `reset`, `shell`, `landing`, `upload`, `review`, `motion` and reformatted; `layout.css` and the unused `.empty-workspace` rule are gone.
+
+Out of scope for Stage 6: authentication, document list/search, manual retry, raster OCR for scanned PDFs, live paid providers, and any metric, customer, accuracy, or compliance claim.
+
+## Blocking Stage 6 completion
+
+1. **No media asset exists yet (ADR-005).** The real UI was verified in a real browser against a Compose demo seeded by `scripts/demo-seed.sh` — loopback navigation now works, so this is no longer an environment limitation. Writing an optimized image or video file into the repository still needs a headless-capture toolchain (for example Playwright or a headless-Chrome container) that this repository does not depend on. Adding that dependency is an open decision.
+2. **The fictional PDF fixtures are not visually realistic.** `testdata/stage2-fictional-compose.pdf` is a 605-byte synthetic file, so the review screen's source panel renders as an essentially empty page. Any product screenshot taken today shows that. Stage 7 already requires at least three realistic fictional fixtures; the media asset should be captured after that work, not before.
+
+Stage 5 — explicit approval and export (CSV and signed webhook) is `PASS`. The remediation is validated with unit, PostgreSQL integration, frontend, and isolated Compose checks. The forward-only schema changes are `0010_stage5_remediation.sql`, `0011_stage5_export_document_invariant.sql`, `0012_stage5_export_approved_version_invariant.sql`, and `0013_stage5_terminal_job_schedule.sql`; no earlier migration is rewritten.
+
+## Implemented through Stage 5
+
+- `POST /approve` requires an explicit current immutable version and `confirm: true`; approval stores an immutable reference and audit version in one transaction.
+- CSV v1 is generated from the exact approved normalized snapshot using UTF-8, RFC 4180 quoting, CRLF records, and integer-minor-unit exact decimal formatting. Repeated requests are byte-identical and do not add audit events.
+- Webhook export is a PostgreSQL durable `export_document` job. It stores only `server:webhook:v1` and a safe presentation label. The worker resolves the real URL and secret from server configuration, never from the export row or request.
+- Processing and export lease recovery have separate lifecycles. Expired export leases close the attempt, schedule retry or dead-letter the export record, append a safe versioned audit event, and leave the approved document state unchanged.
+- `exports.attempts` is atomically synchronized to the claimed durable job attempt on retry, success, permanent failure, lease recovery, and exhaustion. Terminal jobs and export records clear `next_attempt_at`; the API/UI render the durable export value rather than recalculating it from a job join.
+- Two composite foreign keys require every export version to belong to the document and equal its immutable `approved_version_id`; direct insertion of another version of the same document is rejected.
+- Strict webhook delivery is HTTPS-only, redirect-free, limited to port 443, rejects userinfo/query/fragment and private/reserved addresses, validates all DNS answers, uses a bounded timeout/body limit, and signs canonical JSON bytes with HMAC-SHA256.
+- The Compose demo uses an explicitly configured controlled receiver at a fixed internal destination. It validates canonical payload, signature, timestamp window, and idempotency key before accepting a request.
+- Strict webhook configuration has no fallback secret: a configured URL requires an explicit non-empty `WEBHOOK_SECRET`. The public export projection contains only safe destination fields and `version_number`; export-history database failures return an error rather than a partial 200 response.
+- The review UI confirms approval and both export types, validates runtime export records, observes one enqueued webhook through bounded polling plus an accessible manual refresh, shows pending/retrying/succeeded/failed/dead-letter and refresh errors, and keeps modal focus keyboard-accessible with reduced-motion behavior. Export panel styles use shared CSS tokens and responsive split-review breakpoints.
 
 ## Deliberately not implemented
 
-There is no approval, CSV/webhook export, payment, product-media work, final landing scroll sequence, document list, or job retry endpoint. There is no production PDF sandbox, malware scanner, OCR support for scanned PDFs, live provider, user authentication, or claim of extraction accuracy.
+There is no invoice payment, bank connectivity, live AI provider, user-configurable webhook destination, production authentication, document list/search, manual retry endpoint, raster OCR for scanned PDFs, or landing media story.
 
-## Stage 4 validation
+## Validation target
 
-Passed on 2026-07-23:
+The release checklist for this task is recorded in `docs/DEFINITION_OF_DONE.md` and `stage-5-review.md`. The Compose smoke uses an isolated project/volume and must not truncate the default persistent database.
 
-- `go test ./... && go vet ./...`.
-- `DATABASE_URL=postgres://invoiceflow:invoiceflow@127.0.0.1:5432/invoiceflow?sslmode=disable go test -tags=integration ./...` — including isolated human-review immutability, stale-version, and rejection transaction coverage.
-- `cd web && npm run test && npm run build`.
-- `COMPOSE_PROJECT_NAME=invoiceflowstage4 API_HOST_PORT=8083 POSTGRES_HOST_PORT=5435 docker compose up --build --wait --force-recreate` followed by `sh scripts/compose-smoke.sh` — health/readiness, fictional upload/extraction, source access, `human_review` version creation, audit events, and terminal rejection passed. The temporary test project and volumes were then removed.
-
-## Risks carried forward
-
-- Package/base image pins need an intentional update process; the runtime is bounded but not a kernel sandbox.
-- PDF raster OCR needs a dedicated implementation with per-render page/pixel accounting before it is enabled.
-- The local demo is fixed-actor/no-auth. Source delivery is intentionally document-scoped but needs real authentication/authorization before a production deployment.
-- Review detail has fixed history bounds, not pagination; document list/search and manual processing retry remain future scope.
+The earlier note that loopback navigation is blocked no longer holds. Stage 6 drove a real browser against an isolated Compose demo on `127.0.0.1:18081` and confirmed the served landing page, the scroll-driven emphasis, the split review screen with real seeded data, and the mobile layout. What remains manual is producing an optimized media file, not viewing the application.
 
 ## Exact next prompt
 
-> Implement Stage 5 only: add explicit approval of an exact immutable review version, CSV export, and signed generic webhook export. Do not add payment, live provider, product media, or final landing-scroll work.
+> Create realistic fictional invoice fixtures, then capture and commit the Stage 6 media asset from the running demo.

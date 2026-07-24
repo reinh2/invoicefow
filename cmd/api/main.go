@@ -13,6 +13,7 @@ import (
 	"github.com/reinhlord/invoiceflow/internal/app"
 	"github.com/reinhlord/invoiceflow/internal/platform"
 	"github.com/reinhlord/invoiceflow/internal/processing"
+	"github.com/reinhlord/invoiceflow/internal/webui"
 )
 
 func main() {
@@ -41,9 +42,17 @@ func main() {
 		logger.Error("storage startup failed", "error", err)
 		os.Exit(1)
 	}
-	repository := processing.NewRepository(pool)
+	repository := processing.NewRepository(pool).WithWebhookDestination(config.WebhookURL != "", "server:webhook:v1", "Server-configured webhook")
 
-	server := &http.Server{Addr: config.APIAddress, Handler: newHandlerWithDependencies(apiDependencies{db: pool, intake: repository, review: repository, storage: storage, actor: config.DemoActor, tempDir: storage.TemporaryDirectory()}), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
+	// An absent bundle is a supported configuration: the process then serves the
+	// JSON API only, exactly as it did before ADR-013.
+	bundle, err := webui.Load(config.WebDir)
+	if err != nil && !errors.Is(err, webui.ErrNoBundle) {
+		logger.Error("web bundle startup failed", "error", err)
+		os.Exit(1)
+	}
+
+	server := &http.Server{Addr: config.APIAddress, Handler: newHandlerWithDependencies(apiDependencies{db: pool, intake: repository, review: repository, storage: storage, web: bundle, actor: config.DemoActor, tempDir: storage.TemporaryDirectory(), webhookConfigured: config.WebhookURL != ""}), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

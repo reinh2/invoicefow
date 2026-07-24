@@ -9,12 +9,15 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/reinhlord/invoiceflow/internal/documents"
+	"github.com/reinhlord/invoiceflow/internal/export"
 	"github.com/reinhlord/invoiceflow/internal/platform"
 	"github.com/reinhlord/invoiceflow/internal/processing"
+	"github.com/reinhlord/invoiceflow/internal/webui"
 )
 
 const maxRequestBytes int64 = 21 << 20
@@ -28,18 +31,26 @@ type reviewService interface {
 	LoadReviewSource(context.Context, string) (processing.SourceDocument, error)
 	SaveHumanReview(context.Context, string, int, processing.HumanReviewInput, string) (int, error)
 	RejectDocument(context.Context, string, string) error
+	ApproveDocument(context.Context, string, int, string) (int, error)
+	ExportCSV(context.Context, string, string) ([]byte, error)
+	ApprovedVersionNumber(context.Context, string) (int, error)
+	EnqueueWebhookExport(context.Context, string, string) (processing.ExportRecord, error)
 }
 type apiDependencies struct {
-	db             pinger
-	intake         intakeService
-	review         reviewService
-	storage        platform.ObjectStorage
-	actor, tempDir string
+	db                pinger
+	intake            intakeService
+	review            reviewService
+	storage           platform.ObjectStorage
+	web               *webui.Bundle
+	actor, tempDir    string
+	webhookConfigured bool
 }
 
 func newHandler(db pinger) http.Handler { return newHandlerWithDependencies(apiDependencies{db: db}) }
 func newHandlerWithDependencies(deps apiDependencies) http.Handler {
 	mux := http.NewServeMux()
+	// Both health routes are method-scoped so the optional GET "/" bundle
+	// fallback below is an unambiguous, strictly less specific pattern.
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -57,7 +68,33 @@ func newHandlerWithDependencies(deps apiDependencies) http.Handler {
 	mux.HandleFunc("GET /api/v1/documents/{id}/source", func(w http.ResponseWriter, r *http.Request) { getDocumentSource(w, r, deps) })
 	mux.HandleFunc("POST /api/v1/documents/{id}/human-reviews", func(w http.ResponseWriter, r *http.Request) { saveHumanReview(w, r, deps) })
 	mux.HandleFunc("POST /api/v1/documents/{id}/reject", func(w http.ResponseWriter, r *http.Request) { rejectDocument(w, r, deps) })
+	mux.HandleFunc("POST /api/v1/documents/{id}/approve", func(w http.ResponseWriter, r *http.Request) { approveDocument(w, r, deps) })
+	mux.HandleFunc("GET /api/v1/documents/{id}/export/csv", func(w http.ResponseWriter, r *http.Request) { exportCSV(w, r, deps) })
+	mux.HandleFunc("POST /api/v1/documents/{id}/export/webhook", func(w http.ResponseWriter, r *http.Request) { exportWebhook(w, r, deps) })
+	if deps.web != nil {
+		// Registered last and only as GET/HEAD on "/", so every API and health
+		// pattern above stays more specific and keeps its own method handling.
+		mux.Handle("GET /", serveWebBundle(deps.web))
+	}
 	return mux
+}
+
+// reservedPrefixes never fall back to the application shell. An unknown path
+// below them is a server-side route, so it must answer with the JSON error
+// envelope rather than HTML that a client would try to parse as data.
+var reservedPrefixes = []string{"/api/", "/healthz", "/readyz"}
+
+func serveWebBundle(bundle *webui.Bundle) http.Handler {
+	assets := bundle.Handler()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, prefix := range reservedPrefixes {
+			if r.URL.Path == strings.TrimSuffix(prefix, "/") || strings.HasPrefix(r.URL.Path, prefix) {
+				writeAPIError(w, http.StatusNotFound, "route_not_found", "route could not be found")
+				return
+			}
+		}
+		assets.ServeHTTP(w, r)
+	})
 }
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
@@ -177,6 +214,97 @@ func rejectDocument(w http.ResponseWriter, r *http.Request, deps apiDependencies
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func approveDocument(w http.ResponseWriter, r *http.Request, deps apiDependencies) {
+	if deps.review == nil {
+		writeAPIError(w, 500, "internal_error", "request could not be completed")
+		return
+	}
+	id, ok := documentID(w, r)
+	if !ok {
+		return
+	}
+	var request struct {
+		VersionNumber int  `json:"version_number"`
+		Confirm       bool `json:"confirm"`
+	}
+	if err := decodeStrictJSON(w, r, &request); err != nil || !request.Confirm || request.VersionNumber < 1 {
+		writeAPIError(w, http.StatusBadRequest, "invalid_approval", "approval must target an explicit version and be confirmed")
+		return
+	}
+	ver, err := deps.review.ApproveDocument(r.Context(), id, request.VersionNumber, deps.actor)
+	if err != nil {
+		writeReviewError(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	writeJSON(w, http.StatusOK, map[string]any{
+		"document": map[string]any{
+			"id":                      id,
+			"status":                  "approved",
+			"approved_version_number": ver,
+		},
+	})
+}
+
+func exportCSV(w http.ResponseWriter, r *http.Request, deps apiDependencies) {
+	if deps.review == nil {
+		writeAPIError(w, 500, "internal_error", "request could not be completed")
+		return
+	}
+	id, ok := documentID(w, r)
+	if !ok {
+		return
+	}
+	csvBytes, err := deps.review.ExportCSV(r.Context(), id, deps.actor)
+	if err != nil {
+		writeReviewError(w, err)
+		return
+	}
+	version, err := deps.review.ApprovedVersionNumber(r.Context(), id)
+	if err != nil {
+		writeReviewError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("X-InvoiceFlow-CSV-Format", export.FormatVersionV1)
+	w.Header().Set("Content-Disposition", "attachment; filename=\"invoice-"+id+"-v"+strconv.Itoa(version)+".csv\"")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(csvBytes)
+}
+
+func exportWebhook(w http.ResponseWriter, r *http.Request, deps apiDependencies) {
+	if deps.review == nil {
+		writeAPIError(w, 500, "internal_error", "request could not be completed")
+		return
+	}
+	id, ok := documentID(w, r)
+	if !ok {
+		return
+	}
+	if !deps.webhookConfigured {
+		writeReviewError(w, processing.ErrWebhookNotConfigured)
+		return
+	}
+	if r.ContentLength > 0 && r.Body != nil {
+		var dummy struct{}
+		if err := decodeStrictJSON(w, r, &dummy); err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid_export", "malformed request payload")
+			return
+		}
+	}
+	rec, err := deps.review.EnqueueWebhookExport(r.Context(), id, deps.actor)
+	if err != nil {
+		writeReviewError(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	writeJSON(w, http.StatusAccepted, map[string]any{"export": rec})
+}
+
 func decodeStrictJSON(w http.ResponseWriter, r *http.Request, target any) error {
 	r.Body = http.MaxBytesReader(w, r.Body, 65<<10)
 	decoder := json.NewDecoder(r.Body)
@@ -201,6 +329,12 @@ func writeReviewError(w http.ResponseWriter, err error) {
 		writeAPIError(w, http.StatusConflict, "stale_review_version", "review changed; reload the document before saving")
 	case errors.Is(err, processing.ErrInvalidHumanReviewEdit):
 		writeAPIError(w, http.StatusBadRequest, "invalid_review", "review changes could not be accepted")
+	case errors.Is(err, processing.ErrInvalidApproval):
+		writeAPIError(w, http.StatusBadRequest, "invalid_approval", "approval request was invalid")
+	case errors.Is(err, processing.ErrInvalidExport):
+		writeAPIError(w, http.StatusBadRequest, "invalid_export", "export request was invalid")
+	case errors.Is(err, processing.ErrWebhookNotConfigured):
+		writeAPIError(w, http.StatusBadRequest, "webhook_not_configured", "destination webhook URL is not configured on server")
 	default:
 		writeAPIError(w, http.StatusInternalServerError, "internal_error", "request could not be completed")
 	}
@@ -329,6 +463,8 @@ type apiError struct {
 }
 
 func writeAPIError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	var body apiError
 	body.Error.Code = code
 	body.Error.Message = message

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/reinhlord/invoiceflow/internal/export"
 	"github.com/reinhlord/invoiceflow/internal/extraction"
 	"github.com/reinhlord/invoiceflow/internal/invoices"
 )
@@ -19,15 +20,23 @@ type ProcessStorage interface {
 	Open(context.Context, string) (io.ReadCloser, error)
 }
 
+// WebhookDeliverySender is the narrow worker boundary for a server-owned
+// delivery adapter. It keeps the worker independent from URL/secret handling
+// and makes durable retry behavior testable without persisting network data.
+type WebhookDeliverySender interface {
+	Send(context.Context, export.WebhookPayload) export.DeliveryResult
+}
+
 type Worker struct {
-	Repository *Repository
-	Storage    ProcessStorage
-	Text       extraction.TextExtractor
-	OCR        extraction.OCR
-	Structured extraction.StructuredExtractor
-	Limits     extraction.Limits
-	Lease      time.Duration
-	RetryDelay time.Duration
+	Repository    *Repository
+	Storage       ProcessStorage
+	Text          extraction.TextExtractor
+	OCR           extraction.OCR
+	Structured    extraction.StructuredExtractor
+	Limits        extraction.Limits
+	Lease         time.Duration
+	RetryDelay    time.Duration
+	WebhookSender WebhookDeliverySender
 }
 
 // RunOnce claims at most one durable process job and records either an
@@ -51,6 +60,44 @@ func (w Worker) RunOnce(ctx context.Context) (bool, error) {
 		return true, w.Repository.FinishPermanent(ctx, claimed.ID, claimed.LeaseToken, summary)
 	}
 	return true, w.Repository.FinishRetry(ctx, claimed.ID, claimed.LeaseToken, summary, w.RetryDelay)
+}
+
+func (w Worker) RunExportOnce(ctx context.Context) (bool, error) {
+	if w.Repository == nil || w.WebhookSender == nil || w.Lease <= 0 {
+		return false, fmt.Errorf("incomplete export worker")
+	}
+	claimed, err := w.Repository.ClaimExportReady(ctx, w.Lease)
+	if err != nil || claimed == nil {
+		return false, err
+	}
+	details, err := w.Repository.LoadExportJobDetails(ctx, claimed.ID)
+	if err != nil {
+		return true, w.Repository.FinishExportPermanent(ctx, claimed.ID, claimed.LeaseToken, "", err.Error())
+	}
+
+	payload := buildWebhookPayload(details)
+
+	res := w.WebhookSender.Send(ctx, payload)
+	if res.Error == nil {
+		return true, w.Repository.FinishExportSuccess(ctx, claimed.ID, claimed.LeaseToken, details.ExportID, "system")
+	}
+
+	summary := "webhook delivery failed"
+	if res.Retryable {
+		return true, w.Repository.FinishExportRetry(ctx, claimed.ID, claimed.LeaseToken, details.ExportID, summary, w.RetryDelay)
+	}
+	return true, w.Repository.FinishExportPermanent(ctx, claimed.ID, claimed.LeaseToken, details.ExportID, summary)
+}
+
+func buildWebhookPayload(details ExportJobDetails) export.WebhookPayload {
+	return export.WebhookPayload{
+		Event:          "invoice.exported",
+		DocumentID:     details.DocumentID,
+		VersionNumber:  details.VersionNumber,
+		ApprovedAt:     details.ApprovedAt,
+		IdempotencyKey: details.IdempotencyKey,
+		Normalized:     details.Normalized,
+	}
 }
 
 func (w Worker) valid() error {

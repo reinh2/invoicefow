@@ -89,7 +89,7 @@ OCR is a replaceable port. The default adapter runs Tesseract for validated JPEG
 
 The normalizer records the raw proposal alongside canonical values and stable server-generated warnings. It recomputes a line from quantity × unit price + line tax when all are available, compares line totals, compares the line sum to subtotal/total where enough data exists, and compares subtotal + tax to total. It does not assert tax or accounting correctness. A future policy change requires a new named version and never mutates a historical snapshot.
 
-Before Stage 5, define server-managed destination/secret storage, HMAC canonical bytes, timestamps, replay window, redirect policy, and SSRF/DNS-rebinding controls.
+Stage 5's ADR-012 defines the server-managed destination/secret boundary, HMAC canonical bytes, timestamp window, redirect policy, and SSRF/DNS-rebinding controls.
 
 ## ADR-010 — Strict proposal schema, evidence, and diagnostic boundary
 
@@ -136,3 +136,39 @@ Use `templates/ADR_TEMPLATE.md` for new decisions.
 **Decision:** Create one `process_document` job per document. Claim with `FOR UPDATE SKIP LOCKED`, use opaque lease tokens, permit one open attempt, and atomically update document state plus audit. Heartbeats require a matching unexpired token. Retry and expired-lease recovery close attempts, preserve bounded error summaries, schedule retry, and dead-letter at maximum attempts.
 
 **Consequences:** The repository and isolated PostgreSQL tests prove the protocol. The worker runs lease recovery but does not claim/extract jobs until Stage 3 resolves tool and trust-boundary ADRs.
+
+## ADR-012 — Stage 5 explicit version approval, CSV export, and generic signed webhooks
+
+**Status:** Accepted
+
+**Context:** Stage 4 provides immutable review versions and rejection, but cannot finalize an invoice or export structured data. Approval must target an explicit version, lock the document against further review edits, and enable idempotent export to CSV and signed generic webhooks without introducing financial payments, unverified external URLs, or unsafe SSRF vulnerabilities.
+
+**Decision:** Approval is an explicit POST request requiring `version_number` and `confirm: true`. The server transactionally locks the document, verifies `status = 'needs_review'`, checks that the specified version is the current immutable version, sets `approved_version_id` and `approved_at`, updates status to `approved`, and appends a versioned `document_approved` audit event. Approved documents become read-only for review edits.
+
+CSV export (`GET /api/v1/documents/{id}/export/csv`) is permitted only when status is `approved` or `exported`. Public format `csv-v1` is UTF-8, RFC 4180 escaped, uses CRLF record endings, fixed columns/order, and exact server-normalized decimal money strings (never browser floats). The response filename is `invoice-{document_id}-v{version}.csv`. The server reads only the immutable approved foreign key, atomically records one export row, moves `approved` to `exported` on first export, and returns deterministic bytes without duplicating audit events on repetition.
+
+Webhook export (`POST /api/v1/documents/{id}/export/webhook`) creates one `export_document` job and `exports` record for the exact approved version. The record stores only `server:webhook:v1`, a safe label, stable idempotency key, status, attempt projection, and safe error. The URL and secret remain process configuration. The worker builds canonical JSON, signs `timestamp + "." + body` with HMAC-SHA256, and sends `X-InvoiceFlow-Signature`, `X-InvoiceFlow-Timestamp`, and `X-InvoiceFlow-Idempotency-Key`. Strict mode is the default: HTTPS, port 443, no redirects, no userinfo/query/fragment, private/reserved DNS answers denied, DNS dial pinned to a validated answer, bounded timeout and response body. The Compose-only controlled adapter is an exact fixed receiver destination, not a private-network bypass.
+
+The receiver contract uses a five-minute timestamp window and constant-time `hmac.Equal` verification. Retries reuse the same idempotency key and canonical body; the receiver deduplicates the key and rejects reuse with different bytes. Expired export leases close attempts and append safe retry/dead-letter audit events without changing the approved document state.
+
+The persisted `exports.idempotency_key` is the sole delivery key: it is returned by the API, loaded by the worker, placed in the canonical payload, sent in `X-InvoiceFlow-Idempotency-Key`, and used by the controlled receiver for deduplication. The public export projection exposes only `version_number`; the internal version UUID remains server-side. Forward migrations add one composite foreign key from `(exports.document_id, exports.version_id)` to the matching invoice-version document pair and another from that pair to `(documents.id, documents.approved_version_id)`. Thus a direct writer cannot create an export for a different historical version of the same document. On every retry, success, permanent failure, lease recovery, or retry exhaustion the export row receives the claimed job's exact attempt count; terminal jobs and exports have no next-attempt schedule. Strict configuration requires an explicit non-empty secret whenever a webhook URL is configured; the only controlled destination is the exact Compose receiver.
+
+**Consequences:** The complete end-to-end lifecycle (upload → extract → human review → approve exact version → CSV / webhook export) is durable, idempotent, and audited. Raw secrets, full URLs, query/userinfo, internal network details, and unapproved versions are not persisted or exposed.
+
+## ADR-013 — Stage 6 static application delivery and presentation boundary
+
+**Status:** Accepted (Stage 6)
+
+**Context:** Through Stage 5 the Compose demo published only the JSON API and health routes. The React interface existed exclusively behind the Vite development proxy, so `docker compose up` produced a running backend with no reachable product. That contradicts the Stage 6 goal that the landing page leads into a real working `/app`, blocks the ADR-005 requirement to capture factual media from the real application, and makes the release criterion "clone-to-demo instructions work" untrue. Serving browser assets is a new trust boundary: it introduces path resolution, response headers, and a client execution context that the JSON API did not have.
+
+**Decision:** The API optionally serves one pre-built static bundle. The directory is server configuration (`WEB_DIR`); when it is empty or absent the API registers no static routes and behaves exactly as it did through Stage 5, so a clean `go build` and the existing tests never depend on a Node build.
+
+When configured, the whole bundle is read into memory once at startup and never touched on the filesystem again. Requests resolve through an in-memory map keyed by the exact cleaned request path, so no request string ever reaches a filesystem call and path traversal, symlink escape, and directory listing are structurally impossible rather than filtered. Loading is bounded: a maximum file count and total byte budget, and only an allowlist of asset extensions is accepted. Content types are derived from that allowlist, never from file content or client input.
+
+Route precedence is explicit. `/api/`, `/healthz`, and `/readyz` are matched before any static pattern; an unmatched `/api/` path returns the existing JSON error envelope and never falls back to HTML. The SPA fallback serves `index.html` only for `GET`/`HEAD` requests that are not under those prefixes and do not carry a known asset extension; unknown asset paths return 404 rather than HTML.
+
+Every static response carries `X-Content-Type-Options: nosniff` and a fixed restrictive `Content-Security-Policy` with `default-src 'self'`, `base-uri 'none'`, `frame-ancestors 'none'`, `form-action 'self'`, and no `unsafe-inline` or `unsafe-eval` for scripts. Hashed build assets are immutable and cached; `index.html` is `no-store` so a redeployed bundle cannot be served from a stale shell. The document source stream keeps its existing `no-store`/`nosniff`/inline contract unchanged.
+
+The landing page describes only shipped behavior. It contains no metric, customer, accuracy figure, or compliance statement, and its product imagery originates from real fictional-fixture runs of this application.
+
+**Consequences:** `docker compose up` now yields a complete demonstrable product on one loopback port, and real product media can be captured from it. This is asset delivery only: it adds no authentication, no session, no user-supplied content rendering, and no multi-user authorization claim. Production deployments would still place their own TLS termination, cache, and access control in front of this boundary.

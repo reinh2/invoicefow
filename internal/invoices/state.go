@@ -37,6 +37,8 @@ func (s DocumentState) CanTransition(next DocumentState) bool {
 		return next == StateApproved || next == StateRejected
 	case StateApproved:
 		return next == StateExported
+	case StateExported:
+		return next == StateExported
 	case StateFailed:
 		return next == StateQueued
 	default:

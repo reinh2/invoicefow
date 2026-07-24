@@ -6,8 +6,9 @@ import { LandingPage } from './LandingPage';
 const originalFetch = globalThis.fetch;
 
 afterEach(() => {
-  globalThis.fetch = originalFetch;
-  vi.restoreAllMocks();
+	globalThis.fetch = originalFetch;
+	vi.useRealTimers();
+	vi.restoreAllMocks();
 });
 
 function response(status: number, body: unknown): Response {
@@ -17,7 +18,7 @@ function response(status: number, body: unknown): Response {
 describe('routes', () => {
   it('renders an honest landing page with a skip link', () => {
     render(<LandingPage />);
-    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('deliberate place');
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('a person still approves');
     expect(screen.getByRole('link', { name: 'Skip to main content' })).toHaveAttribute('href', '#main-content');
     expect(screen.queryByText(/%|documents processed/i)).not.toBeInTheDocument();
   });
@@ -103,5 +104,156 @@ describe('routes', () => {
     render(<AppShell documentID="0d0c2342-2486-4f10-a858-e75bc763f3e4" />);
     expect(await screen.findByRole('heading', { name: 'Processing failed' })).toBeVisible();
     expect(screen.getByRole('button', { name: 'Reload review' })).toBeVisible();
+  });
+
+	it('supports version approval and exposes export options', async () => {
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    const documentID = '0d0c2342-2486-4f10-a858-e75bc763f3e4';
+    const reviewNeedsReview = {
+      document: {
+        id: documentID, status: 'needs_review', created_at: '2026-07-23T12:00:00Z', updated_at: '2026-07-23T12:00:00Z', media_type: 'application/pdf', audit: [],
+        versions: [{ version_number: 1, source: 'extraction', created_at: '2026-07-23T12:00:00Z', proposal: {}, normalized: {}, warnings: [], evidence: [], diagnostics: [], rounding_policy_version: 'money-v1', editable: { supplier_name: 'Fictional Vendor', supplier_email: '', invoice_number: 'INV-1', issue_date: '2026-07-20', due_date: '', currency: 'USD', subtotal: '20.00', tax_amount: '4.00', total: '24.00', line_items: [] } }],
+      },
+    };
+    const reviewApproved = {
+      document: {
+        ...reviewNeedsReview.document, status: 'approved', approved_version_number: 1, approved_at: '2026-07-23T12:05:00Z',
+      },
+    };
+    let currentResponse = reviewNeedsReview;
+    globalThis.fetch = vi.fn().mockImplementation((path: string) => {
+      if (path.endsWith('/approve')) {
+        currentResponse = reviewApproved;
+        return Promise.resolve(response(200, { document: { id: documentID, status: 'approved', approved_version_number: 1 } }));
+      }
+      if (path.endsWith('/export/csv')) {
+        return Promise.resolve(new Response('supplier_name\r\nVendor\r\n', { status: 200, headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="invoice-doc-v1.csv"' } }));
+      }
+		if (path.endsWith('/export/webhook')) {
+			return Promise.resolve(response(202, { export: { id: 'exp-12345678', document_id: documentID, version_number: 1, export_type: 'webhook', status: 'pending', idempotency_key: 'webhook_export:doc:v1', destination_ref: 'server:webhook:v1', destination_label: 'Server-configured webhook', attempts: 0, created_at: '2026-07-23T12:05:00Z', updated_at: '2026-07-23T12:05:00Z' } }));
+		}
+      return Promise.resolve(response(200, currentResponse));
+    });
+
+    render(<AppShell documentID={documentID} />);
+    expect(await screen.findByRole('button', { name: 'Approve version 1' })).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Approve version 1' }));
+    expect(screen.getByRole('dialog', { name: 'Approve Version 1?' })).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm approval' }));
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Download CSV Export' })).toBeVisible());
+    const csvButton = screen.getByRole('button', { name: 'Download CSV Export' });
+    csvButton.focus();
+    fireEvent.click(csvButton);
+    expect(screen.getByRole('dialog', { name: 'Download CSV Export?' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Confirm CSV export' })).toHaveFocus();
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'Download CSV Export?' })).not.toBeInTheDocument();
+    expect(csvButton).toHaveFocus();
+    fireEvent.click(screen.getByRole('button', { name: 'Download CSV Export' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm CSV export' }));
+    await waitFor(() => expect(screen.getByText(/CSV v1 downloaded/i)).toBeVisible());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Send Webhook Export' }));
+    expect(screen.getByRole('dialog', { name: 'Send Webhook Export?' })).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm webhook export' }));
+		await waitFor(() => expect(screen.getByText(/Webhook export queued/i)).toBeVisible());
+	});
+
+	it('polls webhook delivery from pending through retrying to succeeded without a false success', async () => {
+		const documentID = '0d0c2342-2486-4f10-a858-e75bc763f3e4';
+		const version = { version_number: 1, source: 'extraction', created_at: '2026-07-23T12:00:00Z', proposal: {}, normalized: {}, warnings: [], evidence: [], diagnostics: [], rounding_policy_version: 'money-v1', editable: { supplier_name: 'Fictional Vendor', supplier_email: '', invoice_number: 'INV-1', issue_date: '2026-07-20', due_date: '', currency: 'USD', subtotal: '20.00', tax_amount: '4.00', total: '24.00', line_items: [] } };
+		const record = (status: 'pending' | 'retrying' | 'succeeded', attempts: number, error_summary?: string) => ({ id: 'exp-12345678', document_id: documentID, version_number: 1, export_type: 'webhook', status, idempotency_key: 'webhook_export:doc:v1', destination_ref: 'server:webhook:v1', destination_label: 'Server-configured webhook', attempts, ...(status === 'retrying' ? { next_attempt_at: '2026-07-23T12:05:02Z' } : {}), ...(error_summary ? { error_summary } : {}), created_at: '2026-07-23T12:05:00Z', updated_at: '2026-07-23T12:05:00Z' });
+		const approved = { document: { id: documentID, status: 'approved', created_at: '2026-07-23T12:00:00Z', updated_at: '2026-07-23T12:05:00Z', media_type: 'application/pdf', approved_version_number: 1, approved_at: '2026-07-23T12:05:00Z', versions: [version], audit: [], exports: [] } };
+		const states = [approved, { document: { ...approved.document, exports: [record('pending', 0)] } }, { document: { ...approved.document, exports: [record('retrying', 1, 'webhook delivery temporary failure')] } }, { document: { ...approved.document, status: 'exported', exports: [record('succeeded', 2)] } }];
+		let detailIndex = 0;
+		globalThis.fetch = vi.fn().mockImplementation((path: string) => {
+			if (path.endsWith('/export/webhook')) return Promise.resolve(response(202, { export: record('pending', 0) }));
+			const next = states[Math.min(detailIndex, states.length - 1)];
+			detailIndex += 1;
+			return Promise.resolve(response(200, next));
+		});
+		render(<AppShell documentID={documentID} />);
+		expect(await screen.findByRole('button', { name: 'Send Webhook Export' })).toBeVisible();
+		fireEvent.click(screen.getByRole('button', { name: 'Send Webhook Export' }));
+		fireEvent.click(screen.getByRole('button', { name: 'Confirm webhook export' }));
+		expect(await screen.findByText(/Webhook delivery is pending/i)).toBeVisible();
+		expect(screen.queryByText(/Webhook export succeeded/i)).not.toBeInTheDocument();
+		expect(await screen.findByText(/Webhook delivery is retrying after attempt 1/i, {}, { timeout: 3000 })).toBeVisible();
+		expect(screen.getByText(/webhook delivery temporary failure/i)).toBeVisible();
+		expect(await screen.findByText(/Webhook export succeeded after 2 attempts/i, {}, { timeout: 3000 })).toBeVisible();
+	}, 10000);
+
+	it('shows a webhook dead-letter and retains an accessible manual refresh after polling', async () => {
+		const documentID = '0d0c2342-2486-4f10-a858-e75bc763f3e4';
+		const version = { version_number: 1, source: 'extraction', created_at: '2026-07-23T12:00:00Z', proposal: {}, normalized: {}, warnings: [], evidence: [], diagnostics: [], rounding_policy_version: 'money-v1', editable: { supplier_name: 'Fictional Vendor', supplier_email: '', invoice_number: 'INV-1', issue_date: '2026-07-20', due_date: '', currency: 'USD', subtotal: '20.00', tax_amount: '4.00', total: '24.00', line_items: [] } };
+		const pending = { id: 'exp-deadletter', document_id: documentID, version_number: 1, export_type: 'webhook', status: 'pending', idempotency_key: 'webhook_export:doc:v1', destination_ref: 'server:webhook:v1', destination_label: 'Server-configured webhook', attempts: 0, created_at: '2026-07-23T12:05:00Z', updated_at: '2026-07-23T12:05:00Z' };
+		const deadLetter = { ...pending, status: 'dead_letter', attempts: 5, error_summary: 'webhook delivery failed (exhausted retries)' };
+		const states = [{ document: { id: documentID, status: 'approved', media_type: 'application/pdf', approved_version_number: 1, versions: [version], audit: [], exports: [] } }, { document: { id: documentID, status: 'approved', media_type: 'application/pdf', approved_version_number: 1, versions: [version], audit: [], exports: [deadLetter] } }];
+		let detailIndex = 0;
+		globalThis.fetch = vi.fn().mockImplementation((path: string) => {
+			if (path.endsWith('/export/webhook')) return Promise.resolve(response(202, { export: pending }));
+			const next = states[Math.min(detailIndex, states.length - 1)];
+			detailIndex += 1;
+			return Promise.resolve(response(200, next));
+		});
+		render(<AppShell documentID={documentID} />);
+		expect(await screen.findByRole('button', { name: 'Send Webhook Export' })).toBeVisible();
+		fireEvent.click(screen.getByRole('button', { name: 'Send Webhook Export' }));
+		fireEvent.click(screen.getByRole('button', { name: 'Confirm webhook export' }));
+		expect(await screen.findByText(/Webhook export could not be delivered after 5 attempts/i)).toBeVisible();
+		expect(screen.getAllByText(/webhook delivery failed \(exhausted retries\)/i).length).toBeGreaterThan(0);
+		expect(screen.getByRole('button', { name: 'Refresh webhook status' })).toBeVisible();
+	});
+
+	it('keeps the last export state visible when a webhook status refresh fails', async () => {
+		const documentID = '0d0c2342-2486-4f10-a858-e75bc763f3e4';
+		const version = { version_number: 1, source: 'extraction', created_at: '2026-07-23T12:00:00Z', proposal: {}, normalized: {}, warnings: [], evidence: [], diagnostics: [], rounding_policy_version: 'money-v1', editable: { supplier_name: 'Fictional Vendor', supplier_email: '', invoice_number: 'INV-1', issue_date: '2026-07-20', due_date: '', currency: 'USD', subtotal: '20.00', tax_amount: '4.00', total: '24.00', line_items: [] } };
+		const pending = { id: 'exp-refresh-error', document_id: documentID, version_number: 1, export_type: 'webhook', status: 'pending', idempotency_key: 'webhook_export:doc:v1', destination_ref: 'server:webhook:v1', destination_label: 'Server-configured webhook', attempts: 0, created_at: '2026-07-23T12:05:00Z', updated_at: '2026-07-23T12:05:00Z' };
+		let detailRequests = 0;
+		globalThis.fetch = vi.fn().mockImplementation((path: string) => {
+			if (path.endsWith('/export/webhook')) return Promise.resolve(response(202, { export: pending }));
+			detailRequests += 1;
+			if (detailRequests === 1) return Promise.resolve(response(200, { document: { id: documentID, status: 'approved', media_type: 'application/pdf', approved_version_number: 1, versions: [version], audit: [], exports: [] } }));
+			return Promise.reject(new TypeError('offline'));
+		});
+		render(<AppShell documentID={documentID} />);
+		expect(await screen.findByRole('button', { name: 'Send Webhook Export' })).toBeVisible();
+		fireEvent.click(screen.getByRole('button', { name: 'Send Webhook Export' }));
+		fireEvent.click(screen.getByRole('button', { name: 'Confirm webhook export' }));
+		expect(await screen.findByRole('alert')).toHaveTextContent('Webhook status could not be refreshed');
+		expect(screen.getByText(/Webhook export queued/i)).toBeVisible();
+		expect(screen.getByRole('button', { name: 'Refresh webhook status' })).toBeVisible();
+	});
+
+	it('renders failed webhook history without presenting it as a delivery success', async () => {
+		const documentID = '0d0c2342-2486-4f10-a858-e75bc763f3e4';
+		globalThis.fetch = vi.fn().mockResolvedValue(response(200, { document: { id: documentID, status: 'approved', media_type: 'image/png', approved_version_number: 1, versions: [{ version_number: 1, source: 'extraction', created_at: '2026-07-23T12:00:00Z', proposal: {}, normalized: {}, warnings: [], evidence: [], diagnostics: [], rounding_policy_version: 'money-v1', editable: { supplier_name: 'Vendor', supplier_email: '', invoice_number: 'INV-1', issue_date: '', due_date: '', currency: 'USD', subtotal: '', tax_amount: '', total: '', line_items: [] } }], audit: [], exports: [{ id: 'exp-failed', document_id: documentID, version_number: 1, export_type: 'webhook', status: 'failed', idempotency_key: 'webhook_export:doc:v1', destination_ref: 'server:webhook:v1', destination_label: 'Server-configured webhook', attempts: 1, error_summary: 'webhook delivery failed', created_at: '2026-07-23T12:05:00Z', updated_at: '2026-07-23T12:05:00Z' }] } }));
+		render(<AppShell documentID={documentID} />);
+		expect(await screen.findByText('WEBHOOK (failed)')).toBeVisible();
+		expect(screen.getByText('webhook delivery failed')).toBeVisible();
+		expect(screen.queryByText(/Webhook export succeeded/i)).not.toBeInTheDocument();
+		expect(screen.getByRole('img', { name: 'Original invoice' })).toBeVisible();
+	});
+
+	it('renders a JPEG original in the responsive source panel', async () => {
+		const documentID = '0d0c2342-2486-4f10-a858-e75bc763f3e4';
+		globalThis.fetch = vi.fn().mockResolvedValue(response(200, { document: { id: documentID, status: 'needs_review', media_type: 'image/jpeg', versions: [{ version_number: 1, source: 'extraction', created_at: '2026-07-23T12:00:00Z', proposal: {}, normalized: {}, warnings: [], evidence: [], diagnostics: [], rounding_policy_version: 'money-v1', editable: { supplier_name: 'Vendor', supplier_email: '', invoice_number: 'INV-1', issue_date: '', due_date: '', currency: 'USD', subtotal: '', tax_amount: '', total: '', line_items: [] } }], audit: [] } }));
+		render(<AppShell documentID={documentID} />);
+		const image = await screen.findByRole('img', { name: 'Original invoice' });
+		expect(image).toHaveAttribute('src', `/api/v1/documents/${documentID}/source`);
+		expect(image).toHaveClass('source-image');
+	});
+
+	it('marks export confirmation as reduced-motion without changing keyboard behavior', async () => {
+    const originalMatchMedia = window.matchMedia;
+    window.matchMedia = ((query: string) => ({ matches: query.includes('prefers-reduced-motion'), media: query, onchange: null, addEventListener: () => undefined, removeEventListener: () => undefined, addListener: () => undefined, removeListener: () => undefined, dispatchEvent: () => false })) as typeof window.matchMedia;
+    const documentID = '0d0c2342-2486-4f10-a858-e75bc763f3e4';
+    globalThis.fetch = vi.fn().mockResolvedValue(response(200, { document: { id: documentID, status: 'approved', media_type: 'application/pdf', approved_version_number: 1, versions: [{ version_number: 1, source: 'extraction', created_at: '2026-07-23T12:00:00Z', proposal: {}, normalized: {}, warnings: [], evidence: [], diagnostics: [], rounding_policy_version: 'money-v1', editable: { supplier_name: 'Vendor', supplier_email: '', invoice_number: 'INV-1', issue_date: '', due_date: '', currency: 'USD', subtotal: '', tax_amount: '', total: '', line_items: [] } }], audit: [], exports: [] } }));
+    render(<AppShell documentID={documentID} />);
+    expect(await screen.findByRole('button', { name: 'Download CSV Export' })).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Download CSV Export' }));
+    expect(screen.getByRole('dialog')).toHaveClass('confirm-dialog-reduced-motion');
+    window.matchMedia = originalMatchMedia;
   });
 });

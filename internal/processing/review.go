@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/reinhlord/invoiceflow/internal/export"
 	"github.com/reinhlord/invoiceflow/internal/extraction"
 	"github.com/reinhlord/invoiceflow/internal/invoices"
 )
@@ -20,7 +21,26 @@ var (
 	ErrInvalidDocumentState   = errors.New("invalid document transition")
 	ErrStaleReviewVersion     = errors.New("stale review version")
 	ErrInvalidHumanReviewEdit = errors.New("invalid human review edit")
+	ErrInvalidApproval        = errors.New("invalid approval request")
+	ErrInvalidExport          = errors.New("invalid export request")
+	ErrWebhookNotConfigured   = errors.New("webhook destination URL is not configured on server")
 )
+
+type ExportRecord struct {
+	ID               string     `json:"id"`
+	DocumentID       string     `json:"document_id"`
+	VersionNumber    int        `json:"version_number"`
+	ExportType       string     `json:"export_type"`
+	Status           string     `json:"status"`
+	IdempotencyKey   string     `json:"idempotency_key"`
+	DestinationRef   string     `json:"destination_ref"`
+	DestinationLabel string     `json:"destination_label"`
+	Attempts         int        `json:"attempts"`
+	NextAttemptAt    *time.Time `json:"next_attempt_at,omitempty"`
+	ErrorSummary     *string    `json:"error_summary,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
+}
 
 const maxReviewDetailItems = 100
 
@@ -120,13 +140,16 @@ type ReviewAuditEvent struct {
 }
 
 type ReviewDocument struct {
-	ID        string             `json:"id"`
-	Status    string             `json:"status"`
-	CreatedAt time.Time          `json:"created_at"`
-	UpdatedAt time.Time          `json:"updated_at"`
-	MediaType string             `json:"media_type"`
-	Versions  []ReviewVersion    `json:"versions"`
-	Audit     []ReviewAuditEvent `json:"audit"`
+	ID                    string             `json:"id"`
+	Status                string             `json:"status"`
+	CreatedAt             time.Time          `json:"created_at"`
+	UpdatedAt             time.Time          `json:"updated_at"`
+	MediaType             string             `json:"media_type"`
+	ApprovedVersionNumber *int               `json:"approved_version_number,omitempty"`
+	ApprovedAt            *time.Time         `json:"approved_at,omitempty"`
+	Versions              []ReviewVersion    `json:"versions"`
+	Audit                 []ReviewAuditEvent `json:"audit"`
+	Exports               []ExportRecord     `json:"exports,omitempty"`
 }
 
 type SourceDocument struct{ ObjectKey, MediaType string }
@@ -135,7 +158,7 @@ type SourceDocument struct{ ObjectKey, MediaType string }
 // keys and hashes remain internal and source bytes require a separate stream.
 func (r *Repository) GetReviewDocument(ctx context.Context, documentID string) (ReviewDocument, error) {
 	var detail ReviewDocument
-	err := r.pool.QueryRow(ctx, `SELECT d.id,d.status,d.created_at,d.updated_at,o.media_type FROM documents d JOIN stored_objects o ON o.id=d.object_id WHERE d.id=$1`, documentID).Scan(&detail.ID, &detail.Status, &detail.CreatedAt, &detail.UpdatedAt, &detail.MediaType)
+	err := r.pool.QueryRow(ctx, `SELECT d.id,d.status,d.created_at,d.updated_at,o.media_type,d.approved_at,v.version_number FROM documents d JOIN stored_objects o ON o.id=d.object_id LEFT JOIN invoice_versions v ON v.id=d.approved_version_id WHERE d.id=$1`, documentID).Scan(&detail.ID, &detail.Status, &detail.CreatedAt, &detail.UpdatedAt, &detail.MediaType, &detail.ApprovedAt, &detail.ApprovedVersionNumber)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ReviewDocument{}, ErrDocumentNotFound
 	}
@@ -177,6 +200,23 @@ func (r *Repository) GetReviewDocument(ctx context.Context, documentID string) (
 	if err := audits.Err(); err != nil {
 		return ReviewDocument{}, err
 	}
+
+	exportRows, err := r.pool.Query(ctx, `SELECT e.id,e.document_id,v.version_number,e.export_type,e.status,e.idempotency_key,e.destination_ref,e.destination_label,e.error_summary,e.created_at,e.updated_at,e.attempts,e.next_attempt_at FROM exports e JOIN invoice_versions v ON v.id=e.version_id WHERE e.document_id=$1 ORDER BY e.created_at DESC LIMIT $2`, documentID, maxReviewDetailItems)
+	if err != nil {
+		return ReviewDocument{}, fmt.Errorf("load export history: %w", err)
+	}
+	defer exportRows.Close()
+	for exportRows.Next() {
+		var rec ExportRecord
+		if err := exportRows.Scan(&rec.ID, &rec.DocumentID, &rec.VersionNumber, &rec.ExportType, &rec.Status, &rec.IdempotencyKey, &rec.DestinationRef, &rec.DestinationLabel, &rec.ErrorSummary, &rec.CreatedAt, &rec.UpdatedAt, &rec.Attempts, &rec.NextAttemptAt); err != nil {
+			return ReviewDocument{}, fmt.Errorf("scan export history: %w", err)
+		}
+		detail.Exports = append(detail.Exports, rec)
+	}
+	if err := exportRows.Err(); err != nil {
+		return ReviewDocument{}, fmt.Errorf("read export history: %w", err)
+	}
+
 	return detail, nil
 }
 
@@ -277,6 +317,225 @@ func (r *Repository) RejectDocument(ctx context.Context, documentID, actor strin
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+func (r *Repository) ApproveDocument(ctx context.Context, documentID string, versionNumber int, actor string) (int, error) {
+	if versionNumber < 1 || strings.TrimSpace(actor) == "" {
+		return 0, ErrInvalidApproval
+	}
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	var status string
+	if err := tx.QueryRow(ctx, `SELECT status FROM documents WHERE id=$1 FOR UPDATE`, documentID).Scan(&status); errors.Is(err, pgx.ErrNoRows) {
+		return 0, ErrDocumentNotFound
+	} else if err != nil {
+		return 0, err
+	}
+	if status != string(invoices.StateNeedsReview) {
+		return 0, ErrInvalidDocumentState
+	}
+
+	var latestVer int
+	var versionID string
+	if err := tx.QueryRow(ctx, `SELECT id, version_number FROM invoice_versions WHERE document_id=$1 ORDER BY version_number DESC LIMIT 1`, documentID).Scan(&versionID, &latestVer); errors.Is(err, pgx.ErrNoRows) {
+		return 0, ErrStaleReviewVersion
+	} else if err != nil {
+		return 0, err
+	}
+
+	if versionNumber != latestVer {
+		return 0, ErrStaleReviewVersion
+	}
+
+	now := time.Now().UTC()
+	if _, err := tx.Exec(ctx, `UPDATE documents SET status='approved', approved_version_id=$1, approved_at=$2, updated_at=$2 WHERE id=$3`, versionID, now, documentID); err != nil {
+		return 0, err
+	}
+
+	if err := appendAudit(ctx, tx, documentID, "document_approved", actor, map[string]int{"version_number": versionNumber}); err != nil {
+		return 0, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return versionNumber, nil
+}
+
+func (r *Repository) ExportCSV(ctx context.Context, documentID string, actor string) ([]byte, error) {
+	if strings.TrimSpace(actor) == "" {
+		return nil, ErrInvalidExport
+	}
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	var status string
+	var approvedVersionID *string
+	if err := tx.QueryRow(ctx, `SELECT status, approved_version_id FROM documents WHERE id=$1 FOR UPDATE`, documentID).Scan(&status, &approvedVersionID); errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrDocumentNotFound
+	} else if err != nil {
+		return nil, err
+	}
+	if (status != string(invoices.StateApproved) && status != string(invoices.StateExported)) || approvedVersionID == nil {
+		return nil, ErrInvalidDocumentState
+	}
+
+	var normalizedJSON []byte
+	var versionNumber int
+	if err := tx.QueryRow(ctx, `SELECT version_number, normalized FROM invoice_versions WHERE id=$1`, *approvedVersionID).Scan(&versionNumber, &normalizedJSON); err != nil {
+		return nil, err
+	}
+
+	var normalized invoices.NormalizedProposal
+	if err := json.Unmarshal(normalizedJSON, &normalized); err != nil {
+		return nil, fmt.Errorf("decode approved normalized proposal: %w", err)
+	}
+
+	csvBytes, err := export.GenerateCSV(normalized)
+	if err != nil {
+		return nil, fmt.Errorf("generate csv: %w", err)
+	}
+
+	idempotencyKey := fmt.Sprintf("csv_export:%s:%s", documentID, *approvedVersionID)
+	exportID, err := NewID()
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+
+	var existing string
+	err = tx.QueryRow(ctx, `SELECT id FROM exports WHERE idempotency_key=$1`, idempotencyKey).Scan(&existing)
+	if errors.Is(err, pgx.ErrNoRows) {
+		_, err = tx.Exec(ctx, `INSERT INTO exports (id, document_id, version_id, export_type, status, idempotency_key, destination_ref, destination_label, created_at, updated_at) VALUES ($1,$2,$3,'csv','succeeded',$4,'local:csv-download','CSV download',$5,$5)`, exportID, documentID, *approvedVersionID, idempotencyKey, now)
+		if err != nil {
+			return nil, fmt.Errorf("insert csv export record: %w", err)
+		}
+		if status == string(invoices.StateApproved) {
+			if _, err := tx.Exec(ctx, `UPDATE documents SET status='exported', updated_at=$1 WHERE id=$2`, now, documentID); err != nil {
+				return nil, err
+			}
+		}
+		if err := appendAudit(ctx, tx, documentID, "csv_exported", actor, map[string]int{"version_number": versionNumber}); err != nil {
+			return nil, err
+		}
+	} else if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return csvBytes, nil
+}
+
+func (r *Repository) ApprovedVersionNumber(ctx context.Context, documentID string) (int, error) {
+	var version int
+	err := r.pool.QueryRow(ctx, `SELECT v.version_number FROM documents d JOIN invoice_versions v ON v.id=d.approved_version_id WHERE d.id=$1 AND d.status IN ('approved','exported')`, documentID).Scan(&version)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, ErrInvalidDocumentState
+	}
+	return version, err
+}
+
+func (r *Repository) EnqueueWebhookExport(ctx context.Context, documentID string, actor string) (ExportRecord, error) {
+	if strings.TrimSpace(actor) == "" {
+		return ExportRecord{}, ErrInvalidExport
+	}
+	if !r.webhookConfigured {
+		return ExportRecord{}, ErrWebhookNotConfigured
+	}
+	destinationRef := r.webhookDestinationRef
+	destinationLabel := r.webhookDestinationLabel
+	if destinationRef == "" || destinationLabel == "" {
+		return ExportRecord{}, ErrWebhookNotConfigured
+	}
+
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return ExportRecord{}, err
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	var status string
+	var approvedVersionID *string
+	if err := tx.QueryRow(ctx, `SELECT status, approved_version_id FROM documents WHERE id=$1 FOR UPDATE`, documentID).Scan(&status, &approvedVersionID); errors.Is(err, pgx.ErrNoRows) {
+		return ExportRecord{}, ErrDocumentNotFound
+	} else if err != nil {
+		return ExportRecord{}, err
+	}
+	if (status != string(invoices.StateApproved) && status != string(invoices.StateExported)) || approvedVersionID == nil {
+		return ExportRecord{}, ErrInvalidDocumentState
+	}
+
+	var versionNumber int
+	if err := tx.QueryRow(ctx, `SELECT version_number FROM invoice_versions WHERE id=$1`, *approvedVersionID).Scan(&versionNumber); err != nil {
+		return ExportRecord{}, err
+	}
+
+	idempotencyKey := fmt.Sprintf("webhook_export:%s:%s", documentID, *approvedVersionID)
+	now := time.Now().UTC()
+
+	var record ExportRecord
+	var versionID string
+	var existingJobID *string
+	err = tx.QueryRow(ctx, `SELECT e.id, e.document_id, e.version_id, e.export_type, e.status, e.idempotency_key, e.destination_ref, e.destination_label, e.error_summary, e.job_id, e.created_at, e.updated_at, e.attempts, e.next_attempt_at FROM exports e WHERE e.idempotency_key=$1`, idempotencyKey).Scan(&record.ID, &record.DocumentID, &versionID, &record.ExportType, &record.Status, &record.IdempotencyKey, &record.DestinationRef, &record.DestinationLabel, &record.ErrorSummary, &existingJobID, &record.CreatedAt, &record.UpdatedAt, &record.Attempts, &record.NextAttemptAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		jobID, err := NewID()
+		if err != nil {
+			return ExportRecord{}, err
+		}
+		exportID, err := NewID()
+		if err != nil {
+			return ExportRecord{}, err
+		}
+		_, err = tx.Exec(ctx, `INSERT INTO jobs (id, document_id, job_type, status, attempts, max_attempts, next_attempt_at, idempotency_key, created_at, updated_at) VALUES ($1,$2,'export_document','ready',0,5,$3,$4,$3,$3)`, jobID, documentID, now, idempotencyKey)
+		if err != nil {
+			return ExportRecord{}, fmt.Errorf("enqueue export job: %w", err)
+		}
+
+		_, err = tx.Exec(ctx, `INSERT INTO exports (id, document_id, version_id, export_type, status, idempotency_key, destination_ref, destination_label, job_id, created_at, updated_at) VALUES ($1,$2,$3,'webhook','pending',$4,$5,$6,$7,$8,$8)`, exportID, documentID, *approvedVersionID, idempotencyKey, destinationRef, destinationLabel, jobID, now)
+		if err != nil {
+			return ExportRecord{}, fmt.Errorf("insert webhook export record: %w", err)
+		}
+
+		if err := appendAudit(ctx, tx, documentID, "export_enqueued", actor, map[string]any{"export_type": "webhook", "version_number": versionNumber, "destination_ref": destinationRef, "destination_label": destinationLabel}); err != nil {
+			return ExportRecord{}, err
+		}
+
+		record = ExportRecord{
+			ID:               exportID,
+			DocumentID:       documentID,
+			VersionNumber:    versionNumber,
+			ExportType:       "webhook",
+			Status:           "pending",
+			IdempotencyKey:   idempotencyKey,
+			DestinationRef:   destinationRef,
+			DestinationLabel: destinationLabel,
+			CreatedAt:        now,
+			UpdatedAt:        now,
+		}
+	} else if err != nil {
+		return ExportRecord{}, err
+	}
+	if versionID != "" {
+		var existingVersionNumber int
+		if err := tx.QueryRow(ctx, `SELECT version_number FROM invoice_versions WHERE id=$1`, versionID).Scan(&existingVersionNumber); err != nil {
+			return ExportRecord{}, err
+		}
+		record.VersionNumber = existingVersionNumber
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return ExportRecord{}, err
+	}
+	return record, nil
 }
 
 func appendAudit(ctx context.Context, tx pgx.Tx, documentID, action, actor string, payload any) error {

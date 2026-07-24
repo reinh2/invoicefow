@@ -1,6 +1,6 @@
 # Architecture
 
-## Implemented through Stage 4
+## Implemented through Stage 5
 
 InvoiceFlow is a Go modular monolith with a React/Vite interface, separate API and worker executables, PostgreSQL, and server-owned filesystem storage for its local demo.
 
@@ -58,8 +58,50 @@ The `/` marketing route and `/app` application route use Calibrated Ledger token
 
 The source stream performs a document lookup before opening a server-owned storage key and returns only stored media bytes with inline/no-store/nosniff response headers. It does not expose filenames, object keys, hashes, or paths. The local demo remains fixed-actor/no-auth; production authorization must sit at this boundary.
 
-Motion is CSS transform/opacity utility work with global `prefers-reduced-motion` behavior. Vite forwards `/api` in local development; production frontend serving is not packaged yet.
+Motion is CSS transform/opacity utility work with global `prefers-reduced-motion` behavior. Vite forwards `/api` in local development.
+
+### Stage 6 browser delivery and product story
+
+The API optionally serves one pre-built browser bundle (ADR-013). `WEB_DIR` is server configuration; when it is empty or absent no static route is registered and the process behaves exactly as it did through Stage 5. When it is configured, `internal/webui` reads the directory once at startup under a file-count and total-byte bound, keeps only allowlisted extensions, and answers every request from an exact in-memory map lookup — no request string reaches a filesystem call, so traversal, symlink escape, and directory listing cannot occur. The bundle handler is registered last and only as `GET /`, so each API and health pattern stays strictly more specific and keeps its own method handling; `/api/`, `/healthz`, and `/readyz` are reserved and answer with the JSON envelope rather than HTML. Hashed assets are immutable-cached, the shell is `no-store`, and every response carries `nosniff` and a fixed first-party `Content-Security-Policy`. The Compose image builds `web/` in a Node stage and sets `WEB_DIR=/app/web`, so `docker compose up` yields a reachable product on one loopback port.
+
+The `/` route describes only shipped behavior: intake and validation rules, durable jobs, bounded extraction, server normalization and warning codes, human review, exact-version approval, and both export routes. It carries no metric, customer, accuracy, or compliance claim, and its walkthrough values are the fictional `OFFICE-001` fixture the offline extractor is actually configured with. The provenance story renders every state as readable content at all times; `IntersectionObserver` only moves visual emphasis, so the reduced-motion and no-observer paths present the same information rather than a degraded one. The CSS layer is split by surface — `tokens`, `reset`, `shell`, `landing`, `upload`, `review`, `motion`.
+
+### Stage 5 approval and export
+
+Approval locks the document row and stores the exact latest immutable
+`invoice_versions` row in `documents.approved_version_id`. Review edits and
+approval from any other state are rejected. CSV export reads that foreign key,
+uses the public `csv-v1` byte contract, and records one idempotent export row;
+the document moves from `approved` to `exported` on the first successful CSV or
+webhook export and remains read-only.
+
+Webhook export creates one durable `export_document` job per approved document
+version. `exports` stores only an opaque `destination_ref`, safe label, exact
+version, safe `version_number` projection, one stable idempotency key, safe status/error, and a durable job-attempt projection;
+it never stores the URL, query, userinfo, or secret. The API and UI expose only
+the ref/label. The worker resolves the URL and secret from process configuration
+and sends a canonical JSON payload with an HMAC-SHA256 signature, RFC3339
+timestamp, and stable idempotency key.
+
+Processing and export jobs have separate lease-recovery paths. Expired export
+leases close the attempt, preserve the approved document state, and either
+schedule a retry or append an export dead-letter audit event at the attempt
+limit. Every terminal export transition copies the claimed `jobs.attempts` to
+`exports.attempts` and clears both schedules; review detail reads this durable
+export projection. Delivery uses no redirects, bounded timeout/body size, HTTPS and port
+443 in strict mode, DNS-answer validation against private/reserved ranges, and
+a pinned validated dial. The default configuration is strict. Compose opts into
+one exact controlled receiver destination; that receiver verifies canonical
+bytes, HMAC with `hmac.Equal`, the five-minute timestamp window, and
+idempotency-key reuse.
+
+The schema enforces both the export/document/version relationship and exact
+approval reference with composite foreign keys: a version must belong to its
+document and must equal that document's immutable `approved_version_id`.
+Strict configuration rejects a configured URL without
+an explicit secret. Controlled mode accepts only the exact Compose receiver
+address; it is not a configurable private-network bypass.
 
 ### Deferred stages
 
-Stage 5 adds explicit approval, CSV, and signed webhook export. Stage 6 uses live DOM for the main scroll story and must also ship one optimized factual product-media element from the real fictional application (screen recording, WebM/MP4 with poster/fallback, or image sequence). Stage 7 verifies the portfolio release.
+Stage 6 uses live DOM for the main scroll story and must also ship one optimized factual product-media element from the real fictional application (screen recording, WebM/MP4 with poster/fallback, or image sequence). Stage 7 verifies the portfolio release.

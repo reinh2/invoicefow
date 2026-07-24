@@ -1,0 +1,431 @@
+/* Marketing route. The visual argument is the product itself: warm paper for the
+   source document, dark surfaces for the machine, and a rail that connects the
+   four states a value passes through. */
+
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, .95fr);
+  align-items: center;
+  gap: var(--space-10);
+  padding: clamp(3.5rem, 10vw, 7rem) 0 var(--space-10);
+}
+
+/* Smaller than the global display size: beside the product preview the hero
+   reads as a product statement, not a poster. */
+.hero h1 {
+  max-width: 20ch;
+  font-size: clamp(2.3rem, 4.1vw, 3.8rem);
+  line-height: 1.04;
+  letter-spacing: -.04em;
+}
+
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-top: var(--space-6);
+}
+
+/* Hero preview — a decorative echo of the real split review screen. The
+   authoritative walkthrough is the story section below it. */
+
+.hero-preview {
+  display: grid;
+  grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.hero-preview-source {
+  display: grid;
+  align-content: start;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  background: var(--paper);
+  color: var(--paper-ink);
+  font-size: .7rem;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.hero-preview-data {
+  display: grid;
+  align-content: start;
+  gap: var(--space-3);
+  padding: var(--space-5);
+}
+
+.hero-preview-heading {
+  color: var(--blue);
+  font-size: .7rem;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+
+.hero-preview-row {
+  display: grid;
+  gap: 2px;
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--blue);
+  font-size: .95rem;
+}
+
+.hero-preview-row em {
+  color: var(--muted);
+  font-size: .7rem;
+  font-style: normal;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.hero-preview-foot {
+  margin-top: var(--space-2);
+  color: var(--amber);
+  font-size: .8rem;
+  font-weight: 700;
+}
+
+/* Shared section rhythm */
+
+.story,
+.pipeline,
+.checks,
+.reliability,
+.limits,
+.cta {
+  padding: var(--space-10) 0;
+  border-top: 1px solid var(--line);
+}
+
+.section-intro,
+.story-intro {
+  max-width: 72ch;
+  margin-bottom: var(--space-8);
+}
+
+.section-intro h2,
+.story-intro h2 {
+  margin-bottom: var(--space-4);
+}
+
+/* Provenance story */
+
+.story-steps {
+  display: grid;
+  gap: var(--space-5);
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.story-steps li {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: var(--space-5);
+  padding: var(--space-5);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: transparent;
+  transition:
+    background var(--duration-standard) var(--ease-standard),
+    border-color var(--duration-standard) var(--ease-standard);
+}
+
+.story-steps li[data-active='true'] {
+  border-color: var(--blue);
+  background: var(--surface);
+}
+
+.story-index {
+  display: grid;
+  place-content: center;
+  width: 36px;
+  height: 36px;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  color: var(--muted);
+  font-size: .875rem;
+  font-weight: 700;
+}
+
+.story-steps li[data-active='true'] .story-index {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+
+/* The rail: a thin line down the marker column, connecting the states. */
+.story-steps li:not(:last-child) {
+  position: relative;
+}
+
+.story-steps li:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  top: calc(var(--space-5) + 44px);
+  left: calc(var(--space-5) + 18px);
+  width: 1px;
+  /* Reaches exactly one grid gap past the card, meeting the next marker. */
+  height: calc(100% - 44px);
+  background: var(--line);
+}
+
+.story-body {
+  display: grid;
+  gap: var(--space-3);
+  justify-items: start;
+}
+
+.story-body h3 {
+  max-width: 30ch;
+  margin: 0;
+  font-size: clamp(1.15rem, 2vw, 1.5rem);
+  line-height: 1.2;
+  letter-spacing: -.02em;
+}
+
+.story-body > p {
+  max-width: 74ch;
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.story-paper {
+  display: grid;
+  align-content: start;
+  gap: var(--space-3);
+  width: 100%;
+  max-width: 320px;
+  margin-top: var(--space-2);
+  padding: var(--space-4);
+  border-radius: var(--radius-sm);
+  background: var(--paper);
+  color: var(--paper-ink);
+}
+
+.story-paper-label {
+  font-size: .7rem;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  opacity: .6;
+}
+
+.story-paper-title {
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
+.story-paper-lines {
+  height: 96px;
+  background: repeating-linear-gradient(to bottom, transparent 0 14px, rgb(39 35 31 / .14) 14px 15px);
+}
+
+/* Value states — the distinction the review screen also makes. */
+
+.story-fields {
+  display: grid;
+  gap: var(--space-3);
+  width: 100%;
+  margin-top: var(--space-2);
+}
+
+.story-field {
+  display: grid;
+  gap: 3px;
+  padding: var(--space-3) var(--space-4);
+  border-left: 2px solid var(--line);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--surface-raised);
+}
+
+.story-field-extracted {
+  border-left-color: var(--blue);
+}
+
+.story-field-edited {
+  border-left-color: var(--green);
+}
+
+.story-field-approved {
+  border-left-color: var(--green);
+  background: rgb(111 207 154 / .1);
+}
+
+.story-field-label {
+  color: var(--muted);
+  font-size: .7rem;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.story-field-value {
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.story-field-note {
+  color: var(--muted);
+  font-size: .8rem;
+}
+
+/* Pipeline */
+
+.pipeline-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--space-5);
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.pipeline-list li {
+  display: grid;
+  gap: var(--space-3);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--line);
+}
+
+.pipeline-index {
+  margin: 0;
+  color: var(--blue);
+  font-size: .8rem;
+  font-weight: 700;
+  letter-spacing: .1em;
+}
+
+.pipeline-list h3 {
+  margin: 0 0 var(--space-2);
+  font-size: 1.1rem;
+}
+
+.pipeline-list p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+/* Warnings */
+
+.check-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: var(--space-4);
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.check-list li {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--amber);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+.check-list code {
+  color: var(--amber);
+  font-size: .85rem;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.check-list p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+/* Reliability */
+
+.reliability-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: var(--space-5);
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.reliability-list li {
+  display: grid;
+  justify-items: start;
+  gap: var(--space-3);
+  padding: var(--space-5);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.reliability-list p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+/* Honest scope */
+
+.limit-list {
+  display: grid;
+  gap: var(--space-4);
+  max-width: 78ch;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.limit-list li {
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+/* Closing call to action */
+
+.cta {
+  padding-bottom: var(--space-10);
+}
+
+.cta h2 {
+  max-width: 20ch;
+  margin-bottom: var(--space-4);
+}
+
+@media (max-width: 900px) {
+  .hero {
+    grid-template-columns: 1fr;
+    gap: var(--space-8);
+    padding: var(--space-10) 0 var(--space-8);
+  }
+
+  .hero h1 {
+    max-width: none;
+  }
+}
+
+@media (max-width: 720px) {
+  .story-steps li {
+    grid-template-columns: 1fr;
+    gap: var(--space-4);
+  }
+
+  .story-steps li:not(:last-child)::after {
+    display: none;
+  }
+
+  .hero-preview {
+    grid-template-columns: 1fr;
+  }
+}

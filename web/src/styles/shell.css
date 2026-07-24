@@ -1,0 +1,223 @@
+/* Chrome, typography, and controls shared by the marketing and application
+   routes. Surface-specific rules live in landing.css, upload.css, review.css. */
+
+.site-shell {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  width: min(100%, var(--container));
+  min-height: 100vh;
+  margin: auto;
+  padding: 0 var(--space-5);
+}
+
+.site-header,
+.site-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  border-color: var(--line);
+}
+
+.site-header {
+  min-height: 76px;
+  border-bottom: 1px solid var(--line);
+}
+
+.site-footer {
+  padding: var(--space-5) 0;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: .875rem;
+}
+
+.wordmark {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: 700;
+  letter-spacing: -.02em;
+  text-decoration: none;
+}
+
+.wordmark span {
+  color: var(--blue);
+}
+
+nav {
+  display: flex;
+  gap: var(--space-4);
+}
+
+nav a {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+nav a:hover {
+  color: var(--text);
+}
+
+/* Typography */
+
+h1,
+h2,
+p {
+  margin-top: 0;
+}
+
+h1 {
+  max-width: 15ch;
+  margin-bottom: var(--space-5);
+  font-size: clamp(2.6rem, 6.2vw, 5.5rem);
+  line-height: .98;
+  letter-spacing: -.06em;
+}
+
+h2 {
+  font-size: clamp(1.5rem, 3vw, 2.3rem);
+  line-height: 1.1;
+  letter-spacing: -.04em;
+}
+
+.eyebrow {
+  margin: 0 0 var(--space-3);
+  color: var(--blue);
+  font-size: .75rem;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+
+.hero-copy,
+.page-heading p,
+.workspace-copy p {
+  max-width: 62ch;
+  color: var(--muted);
+  font-size: 1.1rem;
+  line-height: 1.65;
+}
+
+/* Controls */
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: 44px;
+  padding: 0 var(--space-4);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font-weight: 700;
+  text-decoration: none;
+  transition:
+    transform var(--duration-fast) var(--ease-standard),
+    background var(--duration-fast) var(--ease-standard);
+}
+
+.button:not(:disabled):hover {
+  transform: translateY(-1px);
+}
+
+.button-primary {
+  background: var(--blue);
+  color: #07101d;
+}
+
+.button-primary:disabled {
+  opacity: .48;
+}
+
+.button-quiet {
+  border-color: var(--line);
+  color: var(--text);
+}
+
+.status-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: .75rem;
+  font-weight: 700;
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.status-tag-neutral {
+  color: var(--muted);
+}
+
+.status-tag-info {
+  color: var(--blue);
+}
+
+.status-tag-warning {
+  color: var(--amber);
+}
+
+.status-tag-success {
+  color: var(--green);
+}
+
+.status-tag-danger {
+  color: var(--red);
+}
+
+/* Application page frame */
+
+.app-main {
+  padding: var(--space-8) 0;
+}
+
+.page-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-6);
+}
+
+.page-heading h1 {
+  max-width: none;
+  margin-bottom: var(--space-3);
+  font-size: clamp(2rem, 4vw, 3.5rem);
+}
+
+.route-error {
+  display: grid;
+  place-content: center;
+  min-height: 100vh;
+  padding: var(--space-5);
+}
+
+.route-error h1 {
+  font-size: 2rem;
+}
+
+@media (max-width: 720px) {
+  .site-shell {
+    padding: 0 var(--space-4);
+  }
+
+  .site-header {
+    min-height: 64px;
+  }
+
+  .site-footer {
+    align-items: start;
+    flex-direction: column;
+  }
+
+  .page-heading {
+    flex-direction: column;
+  }
+}

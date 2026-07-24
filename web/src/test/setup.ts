@@ -10,3 +10,6 @@ if (!window.matchMedia) {
     addListener: () => undefined, removeListener: () => undefined, dispatchEvent: () => false,
   });
 }
+
+if (!URL.createObjectURL) URL.createObjectURL = () => 'blob:invoiceflow-test';
+if (!URL.revokeObjectURL) URL.revokeObjectURL = () => undefined;
