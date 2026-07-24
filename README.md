@@ -1,62 +1,82 @@
+<div align="center">
+
 # InvoiceFlow
 
-InvoiceFlow turns a PDF, JPEG, or PNG invoice into normalized, versioned business data — and stops there. Extraction produces a **proposal**, not an answer. A person compares it against the original, corrects it, and approves one exact version before anything can be exported.
+**Turn an invoice into clean, reviewed data — with a human in control.**
+**Превращает счёт в чистые проверенные данные — под контролем человека.**
 
-It is not an accounting system. It never pays an invoice and never connects to a bank.
+[![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-durable_jobs-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org)
+[![React](https://img.shields.io/badge/React-TypeScript-61DAFB?logo=react&logoColor=black)](https://react.dev)
+[![Docker](https://img.shields.io/badge/Docker-compose_up-2496ED?logo=docker&logoColor=white)](https://www.docker.com)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Status](https://img.shields.io/badge/status-working_demo-blueviolet.svg)](#-honest-limitations--честные-ограничения)
 
-> **Status:** working end-to-end demo, not a released product. Stages 0–5 are complete; Stage 6 (product presentation) is partially complete. See [Honest limitations](#honest-limitations) and [`docs/CURRENT_TASK.md`](docs/CURRENT_TASK.md).
+<img src="web/public/media/demo-review.png" alt="InvoiceFlow review screen: the original invoice on the left, editable extracted fields on the right" width="820">
 
-## Why it exists
+<sub>The review screen — the original document on the left, editable extracted values on the right.</sub>
 
-Invoice data arrives as files and gets retyped into spreadsheets and accounting tools. Manual entry is slow and error-prone; fully autonomous extraction is risky, because financial documents vary and mistakes are expensive.
+</div>
 
-InvoiceFlow keeps the speed and the control:
+---
 
-- the original document stays visible next to the extracted values;
-- the server says what it could not verify, in explicit warnings;
-- every correction creates a new immutable version instead of overwriting one;
-- approval targets one exact version number and requires confirmation;
-- export reads only the approved version, and repeats are idempotent;
-- the whole history is append-only.
+<div align="center">
 
-## Quick start
+### 🌐 Choose your language & track · Выберите язык и уровень
 
-Requires Docker. No paid credentials, no API key, no network calls to a model provider.
+| | 👤 For everyone · Простыми словами | 🛠 For engineers · Для инженеров |
+|---|---|---|
+| 🇬🇧 **English** | [Read →](#-english--for-everyone) | [Read →](#-english--for-engineers) |
+| 🇷🇺 **Русский** | [Читать →](#-русский--простыми-словами) | [Читать →](#-русский--для-инженеров) |
+
+</div>
+
+> **Status / Статус:** a working end-to-end demo, not a released product. Stages 0–7 are complete. The default demo runs fully offline with no API keys. · Рабочее демо от начала до конца, а не готовый продукт. Этапы 0–7 завершены. Демо по умолчанию работает полностью офлайн, без API-ключей.
+
+---
+
+## 🇬🇧 English · For everyone
+
+### What it is
+
+Invoice data usually arrives as a PDF or a photo and gets **retyped by hand** into spreadsheets and accounting tools. That is slow, and typos in money are expensive. Fully automatic AI extraction is risky too — financial documents vary, and a confident wrong number is worse than no number.
+
+**InvoiceFlow keeps the speed *and* the control.** It reads an invoice, proposes the values, and then hands them to a person to check. Nothing leaves the system until someone approves it.
+
+### How it feels to use
+
+1. **📤 Upload** an invoice — PDF, JPEG, or PNG.
+2. **🔎 It reads the document** and fills in supplier, dates, amounts, tax, and line items.
+3. **👀 You review** the original side-by-side with the extracted values. The system highlights anything it *couldn't* verify — for example, when "subtotal + tax" doesn't equal the total.
+4. **✏️ You correct** anything that's wrong. Every edit is saved as a new version — the old one is never overwritten.
+5. **✅ You approve** one exact version. Only then can it be exported.
+6. **📦 You export** the approved data to a CSV file or send it to another system.
+
+### What it deliberately does *not* do
+
+- ❌ It **never pays** an invoice and **never connects to a bank**.
+- ❌ It is **not an accounting system** — no bookkeeping, no tax filing.
+- ❌ The AI **cannot approve or export on its own**. A person always has the final say.
+
+### Try it in one command
+
+You need [Docker](https://www.docker.com/). No API keys, no sign-up, no internet call to any AI provider.
 
 ```bash
 docker compose up --build --wait
 ```
 
-Then open <http://127.0.0.1:8080> and upload one of the bundled fictional invoices from `testdata/`:
+Then open **<http://127.0.0.1:8080>** and upload one of the sample invoices from the `testdata/` folder. Every sample is completely made up — no real company or person.
 
-- `fixture-aurora-stationery.pdf` — a text PDF that extracts and reconciles cleanly.
-- `fixture-meridian-supplies.png` — a scanned-style image that runs through the OCR path.
-- `fixture-cedarline-services.pdf` — a text PDF whose subtotal plus tax does not equal its total, so the server flags it for review.
+👉 Engineer and want the details? Jump to **[For engineers →](#-english--for-engineers)**.
 
-**The offline extractor only recognizes the bundled fictional fixtures.** It matches on the server-computed SHA-256 plus an embedded marker, so uploading an arbitrary invoice is accepted and processed, but returns an empty proposal with a diagnostic rather than invented values. That is deliberate: the default demo never guesses. The fixtures are generated by `scripts/gen-fixtures.py`; every value in them is invented.
+---
 
-To drive the full flow from the command line instead:
+## 🇬🇧 English · For engineers
 
-```bash
-sh scripts/demo-seed.sh
-```
+A **Go modular monolith** (separate `api` and `worker` binaries) over **PostgreSQL**, with a **React + TypeScript (Vite)** front end. Uploaded files, extracted text, OCR output, and model output are all treated as **untrusted input** — none of them can set a document state, storage key, actor, approval, or export target.
 
-It uploads two fictional documents, saves a correction on one, and carries the other through approval, CSV export, and a signed webhook delivery — using only the public API.
-
-## Demo flow
-
-1. **Upload** — one PDF, JPEG, or PNG up to 20 MiB. The extension, the declared media type, and the file signature must agree.
-2. **Process** — a durable PostgreSQL job extracts text under fixed page, byte, and time bounds, falling back to OCR for images.
-3. **Review** — the original renders on the left, editable normalized values on the right, with server warnings, source evidence, and the audit trail.
-4. **Correct** — saving writes a new immutable version; the previous one keeps its own values and warnings.
-5. **Approve** — an explicit version number plus a confirmation. The document becomes read-only for review edits.
-6. **Export** — CSV of the approved snapshot (byte-identical on every repeat), or a signed webhook delivery with a stable idempotency key.
-
-Document states: `uploaded`, `queued`, `processing`, `needs_review`, `approved`, `rejected`, `exported`, `failed`. Invalid transitions return a stable error.
-
-## Architecture
-
-A Go modular monolith with separate API and worker executables, PostgreSQL, and a React/TypeScript interface.
+### Architecture at a glance
 
 ```text
 React + Vite (web/)              Go API (cmd/api)
@@ -74,68 +94,164 @@ React + Vite (web/)              Go API (cmd/api)
               → normalize + warn → immutable version → needs_review
 ```
 
-- **Durable work.** Processing and export are PostgreSQL jobs with lease tokens, recorded attempts, expired-lease recovery, bounded retries, and dead-letter states. Restarting a worker does not lose queued work.
-- **Exact money.** Amounts are integer minor units with an explicit currency, under a named rounding policy (`money-v1`) stored on every snapshot. No binary floating point touches an amount.
-- **Immutability.** Invoice versions and audit events reject updates and deletes at the database level.
-- **Replaceable adapters.** Storage, PDF, OCR, and the structured extractor sit behind interfaces. The default extractor is deterministic and offline.
+Document states: `uploaded` → `queued` → `processing` → `needs_review` → `approved` → `exported`, plus `rejected` and `failed`. Invalid transitions return a stable, machine-readable error.
 
-Details: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/API_CONTRACT.md`](docs/API_CONTRACT.md), and the decision log in [`docs/DECISIONS.md`](docs/DECISIONS.md).
+### Design decisions worth reading the code for
 
-## Security model
+- **Durable work, not an in-memory queue.** Processing and export are PostgreSQL jobs with lease tokens, recorded attempts, expired-lease recovery, bounded retries, and dead-letter states. Restarting a worker never loses queued work. Jobs are claimed with `FOR UPDATE SKIP LOCKED`.
+- **Exact money.** Amounts are integer minor units with an explicit currency, under a named rounding policy (`money-v1`) stored on every snapshot. No binary floating point ever touches an amount; aggregation cannot silently wrap `int64`.
+- **Immutability by construction.** Invoice versions and audit events reject `UPDATE`/`DELETE` at the database level. A correction writes a *new* version; approval targets one exact version number; export reads only the approved foreign key and is idempotent (byte-identical CSV on every repeat).
+- **The model is behind a boundary.** The structured extractor sits behind an `Extractor` interface; the default is a deterministic offline fake. Provider output is decoded as strict JSON with unknown fields rejected, then fully re-validated and normalized server-side. It cannot control identity, storage, status, approval, or secrets.
+- **Hardened I/O.** Extraction tools (Poppler, Tesseract) are invoked as fixed absolute paths with literal argument arrays, under process timeouts and output caps — no filename is ever interpolated into a shell string. The static web bundle is served from memory by exact key lookup, so path traversal and symlink escape are *structurally* impossible, and every response carries a fixed first-party CSP with no `unsafe-inline`/`unsafe-eval`.
+- **Safe webhooks.** Destinations and secrets are process configuration, never request data. Strict mode is HTTPS-only, redirect-free, port 443, rejects private/reserved addresses with DNS-answer validation, and signs canonical bytes with HMAC-SHA256. Delivery is at-least-once; receivers deduplicate by idempotency key.
 
-Uploaded files, extracted text, OCR output, and model output are all treated as untrusted input. None of them can set a document state, a storage key, an actor, an approval, or an export destination.
-
-- Uploads are bounded and validated by extension, parsed media type, and file signature; images are fully decoded within a pixel ceiling.
-- Storage keys are generated server-side. Client filenames are used only for extension validation and are never persisted, logged, or returned.
-- Extraction tools are invoked as fixed absolute paths with literal argument arrays under process timeouts and output caps. No filename is ever interpolated into a shell string.
-- Webhook destinations and secrets are process configuration, never request data. Strict mode is HTTPS-only, redirect-free, port 443, and rejects private and reserved addresses with DNS-answer validation.
-- The browser bundle is served from memory by exact key lookup, so path traversal and symlink escape are structurally impossible rather than filtered. Every static response carries a fixed first-party CSP with no `unsafe-inline` or `unsafe-eval`.
-- Logs and provider errors are sanitized. No secret, raw payload, storage path, or document text is logged.
-
-Full model: [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md).
-
-## Commands
+### Commands
 
 ```bash
 make fmt              # gofmt
 make lint             # go vet
 make test             # Go unit tests
-make test-integration # PostgreSQL integration tests, requires DATABASE_URL
+make test-integration # PostgreSQL integration tests, needs DATABASE_URL
 make frontend-test    # typecheck, Vitest, production build
-make build            # both binaries and the web bundle
+make build            # both binaries + the web bundle
 make smoke-compose    # full Compose smoke: upload → … → export → audit
 ```
 
-Local development without Docker needs a reachable PostgreSQL, then `go run ./cmd/api`, `go run ./cmd/worker`, and `npm run dev` in `web/` (Vite proxies `/api`).
+Local dev without Docker: a reachable PostgreSQL, then `go run ./cmd/api`, `go run ./cmd/worker`, and `npm run dev` in `web/` (Vite proxies `/api`). Configuration is environment-only — see [`.env.example`](.env.example). `WEB_DIR` is optional; empty means the API serves JSON only.
 
-Configuration is environment-only; see [`.env.example`](.env.example). `WEB_DIR` is optional — when it is empty the API serves JSON only.
+### Testing
 
-## Honest limitations
-
-These are current boundaries of the running system, not a roadmap.
-
-- **No payments.** No invoice payment, bank connectivity, or autonomous financial approval, by design.
-- **Not accounting.** No bookkeeping, double-entry, or tax filing, and no compliance claim of any kind.
-- **No authentication.** The local demo uses one fixed server-side actor. There is no login and no multi-user authorization. Production access control belongs at this boundary and is not implemented.
-- **No live model provider.** The default extractor is a deterministic offline fake. A paid provider adapter would have to implement the same strict schema and server-side validation.
-- **OCR covers images only.** JPEG and PNG go through Tesseract. Raster OCR for scanned PDFs is deliberately not implemented rather than silently approximated.
-- **Webhook delivery is at-least-once.** Receivers must deduplicate by the idempotency key. "Exactly once" is not claimed.
-- **No document list or search**, no manual retry endpoint, and no metrics endpoint.
-- **No screenshots or demo media yet.** They are a Stage 6/7 deliverable and will be captured from the real application; nothing here is mocked up in their place.
-- **The bundled fixtures are minimal synthetic files.** They exercise the pipeline but do not look like realistic invoices yet.
-- The Compose bootstrap role serves both migrations and runtime, so this is not a least-privilege deployment.
-
-No metric, customer, accuracy rate, or certification on this page is asserted, because none has been measured.
-
-## Testing
-
-- Go unit tests: validation, hashing and duplicates, state transitions, money and date normalization, schema validation, arithmetic warnings, retry classification, webhook signatures, export idempotency, and static delivery.
-- PostgreSQL integration tests: migrations and their guard rails, the atomic intake transaction, concurrent duplicate handling, single-winner job claims, lease recovery and attempt history, immutable review versions, orphan reconciliation, export retry and dead-lettering, and the composite foreign keys that bind an export to its exact approved version.
-- Frontend tests: upload states, extracted/warning/edit presentation, line-item editing, approval confirmation, export lifecycle, reduced motion, accessible labels, and an axe pass.
-- Compose smoke: start, readiness, upload, processing, review, correction, approval, idempotent CSV, signed webhook delivery, audit events, and rejection.
+- **Go unit:** validation, hashing/duplicates, state transitions, money & date normalization, schema validation, arithmetic warnings, retry classification, webhook signatures, export idempotency, static delivery.
+- **PostgreSQL integration:** migrations and their guard rails, the atomic intake transaction, concurrent duplicate handling, single-winner job claims, lease recovery, immutable versions, orphan reconciliation, export retry/dead-lettering, and the composite foreign keys binding an export to its exact approved version.
+- **Frontend:** upload states, extracted/warning/edit presentation, line-item editing, approval confirmation, export lifecycle, reduced motion, accessible labels, and an axe pass.
+- **Compose smoke:** start → readiness → upload → processing → review → correction → approval → idempotent CSV → signed webhook → audit → rejection.
 
 CI runs the Go, integration, and frontend suites on every push and pull request.
 
-## License
+### Documentation
 
-No license file is present yet, so no permission to reuse this code is granted.
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · [`docs/API_CONTRACT.md`](docs/API_CONTRACT.md) · [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md) · [`docs/DECISIONS.md`](docs/DECISIONS.md) (ADR log) · [`docs/DEMO_SCRIPT.md`](docs/DEMO_SCRIPT.md)
+
+---
+
+## 🇷🇺 Русский · Простыми словами
+
+### Что это
+
+Данные из счетов обычно приходят в виде PDF или фотографии, и их **вручную перепечатывают** в таблицы и бухгалтерские программы. Это медленно, а ошибка в сумме стоит дорого. Полностью автоматическое извлечение через ИИ тоже рискованно — финансовые документы очень разные, а уверенно названное неверное число хуже, чем отсутствие числа.
+
+**InvoiceFlow сохраняет и скорость, и контроль.** Он читает счёт, предлагает значения и передаёт их человеку на проверку. Ничего не покидает систему, пока человек не подтвердит.
+
+### Как это ощущается в работе
+
+1. **📤 Загружаете** счёт — PDF, JPEG или PNG.
+2. **🔎 Система читает документ** и заполняет поставщика, даты, суммы, налог и позиции.
+3. **👀 Вы проверяете** оригинал рядом с извлечёнными значениями. Система подсвечивает всё, что **не смогла** проверить — например, когда «подытог + налог» не равен итогу.
+4. **✏️ Вы исправляете** ошибки. Каждая правка сохраняется как новая версия — старая никогда не перезаписывается.
+5. **✅ Вы утверждаете** одну конкретную версию. Только после этого возможен экспорт.
+6. **📦 Вы экспортируете** утверждённые данные в CSV или отправляете в другую систему.
+
+### Чего он сознательно **не** делает
+
+- ❌ **Никогда не оплачивает** счёт и **не подключается к банку**.
+- ❌ Это **не бухгалтерская система** — нет учёта и сдачи налогов.
+- ❌ ИИ **не может сам утвердить или экспортировать**. Последнее слово всегда за человеком.
+
+### Попробовать одной командой
+
+Нужен [Docker](https://www.docker.com/). Без API-ключей, без регистрации, без обращений к какому-либо ИИ-провайдеру в интернете.
+
+```bash
+docker compose up --build --wait
+```
+
+Затем откройте **<http://127.0.0.1:8080>** и загрузите один из образцов счетов из папки `testdata/`. Все образцы полностью вымышлены — ни одной реальной компании или человека.
+
+👉 Вы инженер и хотите деталей? Переходите к разделу **[Для инженеров →](#-русский--для-инженеров)**.
+
+---
+
+## 🇷🇺 Русский · Для инженеров
+
+**Модульный монолит на Go** (отдельные бинарники `api` и `worker`) поверх **PostgreSQL**, с фронтендом на **React + TypeScript (Vite)**. Загруженные файлы, извлечённый текст, вывод OCR и вывод модели считаются **недоверенными данными** — ничто из этого не может задать состояние документа, ключ хранилища, актора, утверждение или цель экспорта.
+
+### Архитектура вкратце
+
+```text
+React + Vite (web/)              Go API (cmd/api)
+  /      витрина продукта          GET  /healthz, /readyz
+  /app   загрузка + ревью          POST /api/v1/documents
+                                   GET  /api/v1/documents/{id}
+                                        …ревью, утверждение, экспорт
+                                          |
+             валидация → SHA-256 → приватный temp-файл → promote
+                                          |
+      одна транзакция: объект + документ + событие аудита + задача
+                                          |
+                               Go worker (cmd/worker)
+        захват lease → текст PDF в границах → OCR → строгое предложение
+              → нормализация + предупреждения → неизменяемая версия
+```
+
+Состояния документа: `uploaded` → `queued` → `processing` → `needs_review` → `approved` → `exported`, плюс `rejected` и `failed`. Недопустимые переходы возвращают стабильную машиночитаемую ошибку.
+
+### Решения, ради которых стоит заглянуть в код
+
+- **Надёжная очередь, а не in-memory.** Обработка и экспорт — это задачи в PostgreSQL с lease-токенами, учётом попыток, восстановлением просроченных lease, ограниченными ретраями и dead-letter состояниями. Перезапуск воркера не теряет работу. Задачи захватываются через `FOR UPDATE SKIP LOCKED`.
+- **Точные деньги.** Суммы — целые минорные единицы с явной валютой, под именованной политикой округления (`money-v1`), сохранённой в каждом снимке. Никакой двоичной плавающей точки; агрегация не может тихо переполнить `int64`.
+- **Неизменяемость по построению.** Версии счёта и события аудита отклоняют `UPDATE`/`DELETE` на уровне БД. Правка создаёт **новую** версию; утверждение указывает на один точный номер версии; экспорт читает только утверждённый внешний ключ и идемпотентен (побайтово идентичный CSV при повторах).
+- **Модель за границей.** Структурированный экстрактор скрыт за интерфейсом `Extractor`; по умолчанию — детерминированная офлайн-заглушка. Вывод провайдера декодируется как строгий JSON с отклонением неизвестных полей, затем полностью перепроверяется и нормализуется на сервере. Он не управляет идентичностью, хранилищем, статусом, утверждением или секретами.
+- **Защищённый ввод-вывод.** Инструменты извлечения (Poppler, Tesseract) вызываются по фиксированным абсолютным путям с литеральными массивами аргументов, под таймаутами и лимитами вывода — имя файла никогда не попадает в shell-строку. Статический бандл отдаётся из памяти по точному ключу, поэтому обход путей и symlink-escape **структурно невозможны**, а каждый ответ несёт фиксированный CSP без `unsafe-inline`/`unsafe-eval`.
+- **Безопасные вебхуки.** Адрес и секрет — это конфигурация процесса, а не данные запроса. Строгий режим: только HTTPS, без редиректов, порт 443, отклонение приватных/зарезервированных адресов с валидацией DNS-ответа, подпись канонических байтов через HMAC-SHA256. Доставка — at-least-once; получатель дедуплицирует по ключу идемпотентности.
+
+### Команды
+
+```bash
+make fmt              # gofmt
+make lint             # go vet
+make test             # Go unit-тесты
+make test-integration # интеграционные тесты PostgreSQL, нужен DATABASE_URL
+make frontend-test    # typecheck, Vitest, прод-сборка
+make build            # оба бинарника + веб-бандл
+make smoke-compose    # полный smoke в Compose: upload → … → export → audit
+```
+
+Локальная разработка без Docker: доступный PostgreSQL, затем `go run ./cmd/api`, `go run ./cmd/worker` и `npm run dev` в `web/` (Vite проксирует `/api`). Конфигурация — только через окружение, см. [`.env.example`](.env.example). `WEB_DIR` опционален; пустое значение — API отдаёт только JSON.
+
+### Тестирование
+
+- **Go unit:** валидация, хеширование/дубликаты, переходы состояний, нормализация денег и дат, валидация схемы, арифметические предупреждения, классификация ретраев, подписи вебхуков, идемпотентность экспорта, статическая отдача.
+- **Интеграция PostgreSQL:** миграции и их защита, атомарная транзакция приёма, конкурентные дубликаты, единственный победитель при захвате задачи, восстановление lease, неизменяемые версии, сверка «сирот», ретраи/dead-letter экспорта и составные внешние ключи, связывающие экспорт с точной утверждённой версией.
+- **Фронтенд:** состояния загрузки, показ извлечённого/предупреждений/правок, редактирование позиций, подтверждение утверждения, жизненный цикл экспорта, reduced motion, доступные подписи и прогон axe.
+- **Compose smoke:** старт → готовность → загрузка → обработка → ревью → правка → утверждение → идемпотентный CSV → подписанный вебхук → аудит → отклонение.
+
+CI гоняет Go, интеграционные и фронтенд-наборы на каждый push и pull request.
+
+### Документация
+
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · [`docs/API_CONTRACT.md`](docs/API_CONTRACT.md) · [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md) · [`docs/DECISIONS.md`](docs/DECISIONS.md) (журнал ADR) · [`docs/DEMO_SCRIPT.md`](docs/DEMO_SCRIPT.md)
+
+---
+
+## ⚖️ Honest limitations · Честные ограничения
+
+These are current boundaries of the running system, not a roadmap. · Это текущие границы работающей системы, а не план.
+
+| | English | Русский |
+|---|---|---|
+| **Payments** | No invoice payment or bank connectivity, by design. | Нет оплаты счетов и подключения к банку — принципиально. |
+| **Accounting** | Not a bookkeeping/tax system; no compliance claim. | Не бухгалтерия и не налоги; никаких заявлений о соответствии. |
+| **Auth** | Local demo uses one fixed server-side actor. No login, no multi-user authorization. | Локальное демо — один фиксированный актор. Нет входа и многопользовательской авторизации. |
+| **AI provider** | Default extractor is a deterministic offline fake; it recognizes only the bundled fictional fixtures and returns an empty proposal for anything else rather than guessing. | Экстрактор по умолчанию — офлайн-заглушка; распознаёт только вложенные вымышленные образцы, для остального возвращает пустое предложение, а не выдумку. |
+| **OCR** | JPEG/PNG go through Tesseract; raster OCR for scanned PDFs is intentionally not implemented. | JPEG/PNG идут через Tesseract; растровый OCR для сканированных PDF намеренно не реализован. |
+| **Webhooks** | At-least-once delivery; "exactly once" is not claimed. | Доставка at-least-once; «ровно один раз» не заявляется. |
+| **Scope** | No document list/search, no manual retry endpoint, no metrics endpoint. | Нет списка/поиска документов, ручного ретрая и эндпоинта метрик. |
+| **Deployment** | Loopback demo; the Compose bootstrap role serves both migrations and runtime (not least-privilege). | Демо на loopback; роль bootstrap обслуживает и миграции, и рантайм (не least-privilege). |
+
+No metric, customer, accuracy rate, or certification is asserted anywhere, because none has been measured. · Нигде не заявляются метрики, клиенты, точность или сертификация — потому что они не измерялись.
+
+---
+
+## 📄 License · Лицензия
+
+[MIT](LICENSE) © 2026 Reinhold.
