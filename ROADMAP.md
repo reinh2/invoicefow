@@ -1,6 +1,6 @@
 # Roadmap — InvoiceFlow
 
-> Статус на 24 июля 2026 года. Это живой план развития, а не описание уже поставленных возможностей. При завершении каждого этапа нужно обновить этот файл, `docs/CURRENT_TASK.md`, `docs/API_CONTRACT.md` и, если решение меняет границы системы, `docs/DECISIONS.md`.
+> Статус на 24 июля 2026 года. Это живой план, а не описание уже поставленных возможностей. При завершении каждого пункта нужно обновить этот файл, `docs/CURRENT_TASK.md`, `docs/API_CONTRACT.md` и, если решение меняет границы системы, `docs/DECISIONS.md`.
 
 ## Цель продукта
 
@@ -10,132 +10,47 @@ InvoiceFlow превращает PDF/JPG/PNG-счёт в **структурир�
 
 ## Где проект находится сейчас
 
-Завершены этапы 0–5; Stage 5 повторно проверен как `PASS` после remediation attempt projection, exact approved-version FK, durable retry/dead-letter и UI lifecycle. Репозиторий не является прототипом: в нём есть Go API и worker, PostgreSQL, React/Vite-интерфейс, Docker Compose и автоматические проверки.
+Завершены этапы 0–5 и большая часть этапа 6. Репозиторий не прототип: Go API и worker, PostgreSQL, React/Vite-интерфейс, Docker Compose, зелёный CI (Go + integration + frontend). Проверенная сквозная цепочка: **загрузка → durable processing → извлечение → `needs_review` → неизменяемая human-review версия → утверждение точной версии → CSV / signed webhook экспорт**, интерфейс раздаётся из API (`WEB_DIR`, ADR-013).
 
-| Область | Фактически реализовано | Статус |
-| --- | --- | --- |
-| Приём файлов | PDF/JPEG/PNG, лимиты, проверка расширения/MIME/сигнатуры, SHA-256, приватное серверное хранилище, детерминированные дубликаты | Готово |
-| Надёжная обработка | PostgreSQL jobs, lease-токены, попытки, восстановление истёкших lease, retry/dead-letter для processing | Готово |
-| Извлечение | bounded Poppler, OCR для JPEG/PNG, строгая схема, детерминированный offline fake extractor, нормализация `money-v1`, warnings | Готово с ограничениями |
-| Ревью | Оригинал рядом с данными, правка полей и строк, неизменяемые версии, отклонение, audit history | Готово |
-| Утверждение и экспорт | Утверждение конкретной версии, CSV, webhook, export jobs и export attempts | Готово |
-| Презентация | Честный landing со scroll-историей, раздача собранного фронтенда из API (`WEB_DIR`, ADR-013), рабочая upload/review-страница | Частично готово: нет media asset |
-| Release-пакет | Полный no-key demo, три фикстуры, реальные скриншоты, public README, финальные ревью | Не готов |
+| Область | Статус |
+| --- | --- |
+| Приём файлов (PDF/JPEG/PNG, лимиты, сигнатуры, SHA-256, дубликаты) | ✅ Готово |
+| Надёжная обработка (PostgreSQL jobs, lease, retry/dead-letter) | ✅ Готово |
+| Извлечение (bounded Poppler, OCR для изображений, строгая схема, `money-v1`, warnings) | ✅ Готово с ограничениями |
+| Ревью (оригинал рядом с данными, неизменяемые версии, отклонение, audit) | ✅ Готово |
+| Утверждение и экспорт (exact version, CSV, signed webhook, export jobs) | ✅ Готово |
+| Раздача фронтенда из API + честный landing со scroll-историей (этап 6) | 🟡 Почти: нет media asset |
+| Release-пакет (фикстуры, скриншоты, demo script, финальные ревью, release gate) | 🔴 Не готов |
 
-Текущая проверенная цепочка: **загрузка → durable processing → извлечение → `needs_review` → сохранение неизменяемой human-review версии → утверждение точной версии → CSV / signed webhook экспорт**.
+---
 
-## Неподвижные правила
+## ⇒ Что осталось сделать
 
-- AI/OCR и пользовательский ввод — недоверенные данные; они не задают статус документа, storage key, актёра, секрет или destination webhook.
-- Деньги представлены точно (integer minor units / `money-v1`), а не `float`.
-- Оригинал, extraction/review versions и audit events не изменяются задним числом.
-- Approval адресует ровно одну неизменяемую версию; экспорт адресует ровно утверждённую версию.
-- Внешняя доставка at-least-once: идемпотентность обязательна, «exactly once webhook» не заявляется.
-- Демо работает без платных ключей и использует только фиктивные документы/данные.
-- Новый этап не расширяется неявно: сначала acceptance criteria, затем код, тесты, документация и review diff.
+### Этап 6 — завершить (1 из 5 пунктов открыт)
 
-## Карта пути
+- [ ] **Реалистичные фиктивные фикстуры.** Текущий `testdata/stage2-fictional-compose.pdf` — синтетика на 605 байт, панель оригинала в review рендерится пустой. Это блокирует и media asset, и скриншоты. Нужно ≥3 fictional-документа, безопасных для публикации (см. этап 7 — работа общая).
+- [ ] **Media asset (ADR-005).** Хотя бы один реальный оптимизированный asset из приложения (короткий WebM/MP4 с poster/fallback или image sequence) с зафиксированным источником, командой регенерации и размерным бюджетом. *Требует решения:* добавить headless-инструмент захвата (Playwright / headless-Chrome контейнер) — новой зависимости в репозитории пока нет.
+- [ ] **Ревью новой границы `internal/webui`** — code-reviewer и security-reviewer по раздаче статики (ADR-013): path resolution, заголовки, CSP, отсутствие обхода `/api`.
 
-```text
-Готово: intake → processing → extraction → human review/reject
-                                      │
-                                      ▼
-Этап 5: approve exact version → CSV / webhook jobs → export history
-                                      │
-                                      ▼
-Этап 6: честный product story и media на landing
-                                      │
-                                      ▼
-Этап 7: reproducible portfolio release
-                                      │
-                                      ▼
-После релиза: production hardening и расширения только по отдельным ADR
-```
+Сделано на этапе 6: раздача бандла из API (ADR-013), честный `/` без ложных метрик, scroll-story с равнозначным reduced-motion путём, разбивка CSS по поверхностям. Детали — в `docs/CURRENT_TASK.md`.
 
-## Этап 5 — утверждение и экспорт
+### Этап 7 — воспроизводимый portfolio release
 
-**Цель:** замкнуть основной пользовательский сценарий без расширения в платежи, живого AI-провайдера, list/search, OCR scanned PDF или финальный landing.
+- [ ] **Три фикстуры** разных путей: чистый text-PDF, JPEG/PNG через OCR, документ с warning. Всё fictional и безопасно для публикации. *(Пересекается с фикстурами этапа 6.)*
+- [ ] **Расширить Compose smoke** на failure paths: duplicate, warning/correction, retry/dead-letter. Сейчас smoke покрывает happy path + rejection.
+- [ ] **Скриншоты из реального приложения** и **demo script на 60–90 секунд**.
+- [ ] **Финальные ревью:** code, database, security, document-AI, frontend/accessibility, performance. Закрыть все high-severity или явно не выпускать релиз.
+- [ ] **Release gate с чистого окружения** без ручных правок БД и платных credentials (команды ниже).
+- [ ] **Привести `docs/PORTFOLIO_RELEASE_CHECKLIST.md` в соответствие с реальностью** — часть инженерных и security-пунктов уже выполнена, но не отмечена.
+- [x] English `README.md` — назначение, quick start, архитектура, demo flow, security model, честные ограничения. *(Сделано досрочно.)*
 
-### 5.1. Сначала зафиксировать контракт и модель данных
+### Сквозные решения (небольшие, но нужны для публичного портфолио)
 
-- Принять ADR для approval и webhook до реализации: server-owned actor/destination/secret, canonical payload bytes, HMAC algorithm, timestamp, replay window, TLS-only/без redirect, SSRF и DNS-rebinding защита.
-- Добавить только forward migration. Явно связать документ с утверждённой immutable `invoice_version`; запретить смену этой ссылки после approval.
-- Добавить сущности/таблицы export records и export attempts либо эквивалентную минимальную схему, которая фиксирует: тип экспорта, exact approved version, destination identity без секрета, idempotency key, состояние, число попыток, расписание, безопасную ошибку и timestamps.
-- Сформулировать однозначную семантику статуса: документ переходит `needs_review → approved` атомарно с audit event; успешный экспорт переводит `approved → exported`. Если CSV и webhook оба поддерживаются для одного документа, заранее определить, как это согласуется с единственным состоянием `exported` и историей нескольких экспортов.
-- Обновить `docs/API_CONTRACT.md`, `docs/ARCHITECTURE.md`, `docs/DECISIONS.md` и `docs/CURRENT_TASK.md` до/вместе с изменением контракта.
+- [ ] **Файл лицензии.** Его нет — формально прав на переиспользование кода не выдано. Обычно MIT или Apache-2.0.
+- [ ] **Судьба `MASTER_PROMPT.md` и `MASTER_PROMPT_PREMIUM_DESIGN.md`** в публичном репозитории (локально они с правами `600`; в репозитории с первого коммита). Удаление потребует переписывания истории — отдельная операция по явной команде.
+- [ ] **`actions/checkout@v4` → `v5`** — CI работает, но GitHub предупреждает об устаревании Node 20. Мелочь на потом.
 
-### 5.2. Утверждение exact version
-
-- Реализовать явный endpoint с `version_number` и `confirm: true`; не допускать неявного «approve latest».
-- В одной транзакции заблокировать document row, проверить `needs_review`, существование и допустимость указанной версии, сохранить approval reference, сменить статус и добавить `document_approved` audit event с номером версии.
-- Вернуть стабильные ошибки для несуществующего документа, несуществующей/устаревшей версии, повторного approval и иной недопустимой стадии.
-- В UI показать конкретную утверждаемую версию, предупреждение о необратимости в текущем workflow и модальное подтверждение. После approval форма read-only; audit явно показывает актёра, время и версию.
-
-### 5.3. CSV как детерминированный локальный export
-
-- Экспортировать только canonical normalized data утверждённой версии; никогда не пересчитывать или не брать «последнюю» версию во время экспорта.
-- Зафиксировать версию CSV-формата, порядок/названия колонок, UTF-8 encoding, escaping, представление exact money и строковую обработку переносов. Не использовать browser float.
-- Сделать повторный запрос идемпотентным: один и тот же exact version/type не должен создавать противоречивые результаты или дублировать audit events.
-- Выбрать и документировать безопасный UX: контролируемое скачивание сервером сформированного CSV либо durable CSV export job с доступом к неизменяемому результату. Выбор определяется тем, нужно ли демонстрировать единый job-path для всех exports; он не должен обходить invariant approval.
-
-### 5.4. Generic signed webhook через durable job
-
-- Конфигурировать destination и secret только на сервере; local demo по умолчанию не отправляет запросы наружу. Для smoke использовать локальный контролируемый receiver или зафиксированный demo adapter, не пользовательский URL.
-- Создавать `export_document` job только после approval и вместе с audit event в транзакции; взять существующие lease/retry/dead-letter primitives как основу, но не смешивать lifecycle processing и export.
-- Подписывать канонические bytes payload HMAC, добавлять timestamp и immutable idempotency key. При необходимости receiver проверяет подпись constant-time сравнением.
-- До соединения валидировать URL и разрешённый адрес; запретить private/reserved ranges, redirects, произвольные схемы/ports и DNS rebinding. Установить bounded timeout, response-size limit и безопасную классификацию retryable/permanent ошибок.
-- Сохранять только безопасный результат доставки. Не логировать секреты, document text, raw payload и подробности сетевой ошибки.
-
-### 5.5. Представление export в UI
-
-- Добавить отдельные confirm flows для approval и export; показывать approved version, формат/назначение, состояние job, retry/dead-letter и завершение без ложных «success».
-- Сохранить accessibility: нативные кнопки, корректный focus в modal, видимые статусы, текстовые альтернативы motion и `prefers-reduced-motion`.
-- Дополнить audit timeline событиями approval, enqueue, successful export, retry и dead-letter. История объясняет факт, а не раскрывает секреты или внешние URL.
-
-### Definition of done этапа 5
-
-- Нельзя утвердить несуществующую, неактуальную или неявно выбранную версию; approved version неизменяема.
-- Нельзя экспортировать `needs_review`, `rejected`, `failed` или произвольную review version.
-- CSV стабилен и содержит только canonical approved data.
-- Повтор export-запроса идемпотентен; worker restart, lease loss и transient webhook error не теряют историю и не обходят лимит попыток.
-- Webhook подписан, destination server-owned и защищён от базовых SSRF/replay/redirect ошибок; секреты не попадают в API, БД audit, ошибки или логи.
-- Есть unit, PostgreSQL integration, API/UI и Compose smoke coverage полного пути: upload → extract → correction → approve exact version → CSV и/или controlled webhook → audit.
-- Все существующие проверки зелёные, документация описывает только реально доступное поведение.
-
-### За пределами этапа 5
-
-Нельзя включать сюда платёжные функции, реального платного extractor provider, пользовательскую конфигурацию webhook URL, production authentication, list/search, manual retry endpoint, PDF raster OCR, финальный landing или неограниченные интеграции.
-
-## Этап 6 — premium landing и достоверная продуктовая история
-
-**Цель:** превратить уже работающий demo в понятную портфолио-презентацию, не маскируя незавершённые функции.
-
-- Привести `/` в соответствие с текущим продуктом: убрать устаревшие заявления о «foundation only» и будущих review/upload, если эти возможности уже работают.
-- Построить единую историю: оригинал → извлечение → server warnings → human correction → approval exact version → export → audit. Все экраны и данные должны происходить из реального fictional demo.
-- Добавить hero, real product preview, workflow/architecture, use cases, reliability section и CTA в `/app`; не добавлять фиктивные метрики, клиентов или claims об accuracy/compliance.
-- Реализовать одну качественную scroll-driven сцену средствами live DOM или оптимизированного factual media. Для reduced motion, mobile и отсутствия video дать равнозначный статический/упрощённый путь.
-- Создать минимум один реальный media asset из приложения: короткий WebM/MP4 с poster/fallback или оптимизированную image sequence. Зафиксировать источник, команду регенерации, форматы и размерный бюджет.
-- Проверить keyboard navigation, focus, контраст, responsive split-review, отсутствие layout shift и production bundle/media size. Motion не должен скрывать ошибку или задерживать действие.
-
-### Definition of done этапа 6
-
-- [x] Landing ведёт в настоящий рабочий `/app` и описывает ровно то, что демонстрирует приложение. Раздача собранного бандла из API добавлена отдельным решением ADR-013, потому что до неё `docker compose up` не отдавал интерфейс вообще.
-- [x] Ключевые feature sections и product preview опираются на реальные fictional flows: значения walkthrough — это фикстура `OFFICE-001`, на которую действительно настроен offline extractor.
-- [x] Scroll-story, mobile/tablet layout и reduced-motion fallback проверены автоматизированно (`web/src/app/routes/landing.test.tsx`) и вручную в реальном браузере против изолированного Compose-демо.
-- [ ] **Новый media asset оптимизирован, имеет fallback и не создаёт неприемлемую загрузку страницы.** Не сделано. Блокеры записаны в `docs/CURRENT_TASK.md`: нужен headless-инструмент захвата и реалистичные фикстуры, иначе на скриншоте панель оригинала пустая.
-
-## Этап 7 — portfolio release
-
-**Цель:** сделать проект воспроизводимым и честно демонстрируемым с чистого clone до полного сценария.
-
-- Подготовить не менее трёх фикстур: чистый text-PDF, JPEG/PNG с OCR-путём и документ с предупреждением. Все данные должны быть fictional и безопасны для публикации.
-- Расширить Compose smoke до полного happy path и ключевых failure paths: duplicate, warning/correction, approval, idempotent CSV/webhook, retry/dead-letter там, где применимо.
-- Подготовить English `README.md`: назначение, быстрый старт, команды, архитектура, demo flow, screenshots, security model, честные ограничения и отсутствие payment/accounting claims.
-- Обновить architecture/API/decision docs так, чтобы они соответствовали коду. Добавить 60–90-second demo script и реальные скриншоты/медиа.
-- Выполнить финальные code, database, security, document-AI, frontend/accessibility и performance reviews; закрыть все high-severity замечания или явно не выпускать релиз.
-- Выполнить release gate с чистого окружения без ручных правок БД и без платных credentials.
-
-### Release gate
+### Release gate этапа 7
 
 ```text
 make fmt
@@ -148,7 +63,29 @@ docker compose up --build --wait
 sh scripts/compose-smoke.sh
 ```
 
-Команда `make check` должна оставаться удобным агрегированным gate; для CI/чистой машины ей требуется доступный PostgreSQL согласно текущему контракту команды.
+`make check` остаётся агрегированным gate; для CI/чистой машины ему нужен доступный PostgreSQL.
+
+---
+
+## Карта пути
+
+```text
+✅ intake → processing → extraction → human review/reject
+✅ approve exact version → CSV / webhook jobs → export history
+🟡 Этап 6: честный product story + раздача UI из API   ← нет media asset
+🔴 Этап 7: reproducible portfolio release
+   └─ После релиза: production hardening и расширения только по отдельным ADR
+```
+
+## Неподвижные правила
+
+- AI/OCR и пользовательский ввод — недоверенные данные; они не задают статус документа, storage key, актёра, секрет или destination webhook.
+- Деньги представлены точно (integer minor units / `money-v1`), а не `float`.
+- Оригинал, extraction/review versions и audit events не изменяются задним числом.
+- Approval адресует ровно одну неизменяемую версию; экспорт адресует ровно утверждённую версию.
+- Внешняя доставка at-least-once: идемпотентность обязательна, «exactly once webhook» не заявляется.
+- Демо работает без платных ключей и использует только фиктивные документы/данные.
+- Новый этап не расширяется неявно: сначала acceptance criteria, затем код, тесты, документация и review diff.
 
 ## После portfolio release — отдельный backlog
 
@@ -159,14 +96,22 @@ sh scripts/compose-smoke.sh
 | P0 для production, не для demo | Authentication/authorization, actor identity, document-level access control, roles | Текущий local demo сознательно использует fixed actor и не делает production security claim. |
 | P0 для production | Least-privilege DB roles, secrets management, observability/metrics, backup/retention/runbooks, stronger process sandbox/malware controls | Эти меры меняют эксплуатационную модель, а не только UI. |
 | P1 | PDF raster OCR с page/pixel accounting, безопасный live provider adapter | Нельзя «включить» без нового resource/security design. |
-| P1 | Document list/search, pagination, manual processing retry и операторский UX | Нужны для работы с потоком документов, но не должны смешиваться с этапом approval/export. |
+| P1 | Document list/search, pagination, manual processing retry и операторский UX | Нужны для потока документов, но не должны смешиваться с этапом approval/export. |
 | P1 | S3/MinIO storage adapter, managed webhook destinations | Потребуют управления конфигурацией, секретами и deployment model. |
 | P2 | Multi-tenant boundaries, extra accounting integrations, analytics | Не входят в текущую продуктовую цель и могут разрушить ясность portfolio demo. |
 
 ## Как вести roadmap
 
-1. Перед началом этапа перенести его точную цель, scope, invariants и test plan в `docs/CURRENT_TASK.md`.
-2. Сначала принять решения, которые меняют данные, доверенные границы или публичный API; после этого делать миграции и код.
+1. Перед началом пункта перенести его точную цель, scope, invariants и test plan в `docs/CURRENT_TASK.md`.
+2. Сначала принять решения, меняющие данные, доверенные границы или публичный API; после — миграции и код.
 3. Реализовывать вертикальным срезом: migration → repository/domain → worker/API → UI → tests → smoke → docs.
 4. Не помечать пункт «готово» по наличию кода: обязательны проверка failure paths, зелёные релевантные тесты и review diff.
-5. После релиза пересматривать этот план по фактическим ограничениям, не по желаемым marketing claims.
+5. После релиза пересматривать план по фактическим ограничениям, не по желаемым marketing claims.
+
+## Архив выполненных этапов
+
+Полные acceptance-критерии завершённых этапов не дублируются здесь, чтобы план оставался читаемым:
+
+- **Этапы 0–4** (fundament, intake, extraction, human review) — в `docs/DECISIONS.md` (ADR-000…ADR-011) и `docs/ARCHITECTURE.md`.
+- **Этап 5** (approval и export) — ADR-012, `stage-5-review.md`, `docs/CURRENT_TASK.md`.
+- **Этап 6** (раздача UI, product story) — ADR-013, `docs/ARCHITECTURE.md`, `docs/CURRENT_TASK.md`.
