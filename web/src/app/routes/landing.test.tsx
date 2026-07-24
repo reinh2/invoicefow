@@ -18,22 +18,26 @@ function preferReducedMotion(reduced: boolean): void {
   })) as typeof window.matchMedia;
 }
 
-/* Captures the observer callback so a test can drive scroll position without a
-   layout engine. */
+/* Captures the observer callbacks so a test can drive scroll position without a
+   layout engine. The story registers more than one observer (scroll emphasis
+   and one-time reveal), so the stub fans a fired entry out to every callback. */
 function stubIntersectionObserver(): { fire: (target: Element) => void } {
-  let callback: IntersectionObserverCallback | undefined;
-  const observed: Element[] = [];
+  const callbacks: IntersectionObserverCallback[] = [];
   class Stub {
-    constructor(given: IntersectionObserverCallback) { callback = given; }
-    observe(element: Element): void { observed.push(element); }
-    disconnect(): void { observed.length = 0; }
+    constructor(given: IntersectionObserverCallback) { callbacks.push(given); }
+    observe(): void { /* geometry is driven by fire() */ }
+    disconnect(): void { /* not used */ }
     unobserve(): void { /* not used */ }
     takeRecords(): IntersectionObserverEntry[] { return []; }
   }
   globalThis.IntersectionObserver = Stub as unknown as typeof IntersectionObserver;
   return {
     fire: (target: Element): void => {
-      act(() => callback?.([{ target, isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver));
+      act(() => {
+        for (const callback of callbacks) {
+          callback([{ target, isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver);
+        }
+      });
     },
   };
 }
@@ -89,6 +93,12 @@ describe('landing page', () => {
     observer.fire(steps[2]);
     expect(steps[2]).toHaveAttribute('data-active', 'true');
     expect(steps[0]).toHaveAttribute('data-active', 'false');
+    // The rail fills up to, but not including, the active step.
+    expect(steps[0]).toHaveAttribute('data-passed', 'true');
+    expect(steps[1]).toHaveAttribute('data-passed', 'true');
+    expect(steps[2]).toHaveAttribute('data-passed', 'false');
+    // A revealed step is never hidden again; content stays present throughout.
+    expect(steps[2]).toHaveAttribute('data-inview', 'true');
     for (const step of steps) expect(step).toBeVisible();
   });
 

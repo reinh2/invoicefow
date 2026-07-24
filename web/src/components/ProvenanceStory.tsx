@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type ReactElement, type ReactNode } from 'react';
 import { StatusTag, type StatusTone } from './StatusTag';
 import { useReducedMotion } from '../motion/useReducedMotion';
 
@@ -82,13 +82,28 @@ const steps: Step[] = [
   },
 ];
 
-function useActiveStep(enabled: boolean): [number, (index: number) => (element: HTMLLIElement | null) => void] {
+type StoryScroll = {
+  active: number;
+  revealed: boolean[];
+  register: (index: number) => (element: HTMLLIElement | null) => void;
+};
+
+/* Two observers drive the scroll motion. A center band picks the single active
+   step (the one whose transition is currently being read); a lower threshold
+   marks each step "revealed" once — a sticky flag, so a card never re-hides on
+   scroll-up. When IntersectionObserver is unavailable, every step is revealed
+   immediately, so the no-observer path is equivalent rather than blank. */
+function useStoryScroll(enabled: boolean): StoryScroll {
   const [active, setActive] = useState(0);
+  const [revealed, setRevealed] = useState<boolean[]>(() => steps.map(() => !enabled));
   const elements = useRef<(HTMLLIElement | null)[]>([]);
 
   useEffect(() => {
-    if (!enabled || typeof IntersectionObserver === 'undefined') return undefined;
-    const observer = new IntersectionObserver((entries) => {
+    if (!enabled || typeof IntersectionObserver === 'undefined') {
+      setRevealed(steps.map(() => true));
+      return undefined;
+    }
+    const emphasis = new IntersectionObserver((entries) => {
       setActive((current) => {
         let next = current;
         for (const entry of entries) {
@@ -98,12 +113,36 @@ function useActiveStep(enabled: boolean): [number, (index: number) => (element: 
         return next;
       });
     }, { rootMargin: '-45% 0px -45% 0px' });
-    for (const element of elements.current) if (element !== null) observer.observe(element);
-    return () => observer.disconnect();
+
+    const reveal = new IntersectionObserver((entries) => {
+      setRevealed((current) => {
+        let changed = false;
+        const next = current.slice();
+        for (const entry of entries) {
+          const index = Number(entry.target.getAttribute('data-step-index'));
+          if (entry.isIntersecting && Number.isInteger(index) && !next[index]) {
+            next[index] = true;
+            changed = true;
+          }
+        }
+        return changed ? next : current;
+      });
+    }, { rootMargin: '0px 0px -12% 0px', threshold: 0.2 });
+
+    for (const element of elements.current) {
+      if (element !== null) {
+        emphasis.observe(element);
+        reveal.observe(element);
+      }
+    }
+    return () => {
+      emphasis.disconnect();
+      reveal.disconnect();
+    };
   }, [enabled]);
 
   const register = (index: number) => (element: HTMLLIElement | null): void => { elements.current[index] = element; };
-  return [active, register];
+  return { active, revealed, register };
 }
 
 /* The scene never hides content behind scrolling: every step is rendered and
@@ -112,7 +151,7 @@ function useActiveStep(enabled: boolean): [number, (index: number) => (element: 
    than degraded. */
 export function ProvenanceStory(): ReactElement {
   const reducedMotion = useReducedMotion();
-  const [active, register] = useActiveStep(!reducedMotion);
+  const { active, revealed, register } = useStoryScroll(!reducedMotion);
 
   return <section id="story" className="story" aria-labelledby="story-title">
   <div className="story-intro">
@@ -126,6 +165,9 @@ export function ProvenanceStory(): ReactElement {
         ref={register(index)}
         data-step-index={index}
         data-active={!reducedMotion && index === active ? 'true' : 'false'}
+        data-passed={!reducedMotion && index < active ? 'true' : 'false'}
+        data-inview={reducedMotion || revealed[index] ? 'true' : 'false'}
+        style={{ '--story-step': index } as CSSProperties}
       >
         <p className="story-index" aria-hidden="true">{index + 1}</p>
         <div className="story-body">

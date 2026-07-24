@@ -155,6 +155,7 @@
 }
 
 .story-steps li {
+  position: relative;
   display: grid;
   grid-template-columns: 44px minmax(0, 1fr);
   gap: var(--space-5);
@@ -164,12 +165,31 @@
   background: transparent;
   transition:
     background var(--duration-standard) var(--ease-standard),
-    border-color var(--duration-standard) var(--ease-standard);
+    border-color var(--duration-standard) var(--ease-standard),
+    box-shadow var(--duration-emphasized) var(--ease-standard),
+    opacity var(--duration-slow) var(--ease-decelerate),
+    transform var(--duration-slow) var(--ease-decelerate);
+}
+
+/* Scroll reveal. Content is visible by default; only the scroll path starts a
+   step lowered and dimmed, then settles it as it enters the viewport. The
+   per-step delay makes the four states cascade rather than snap together. The
+   static (reduced-motion) path never applies these, so it stays equivalent. */
+.story-steps[data-motion='scroll'] li[data-inview='false'] {
+  opacity: 0;
+  transform: translateY(28px);
+}
+
+.story-steps[data-motion='scroll'] li[data-inview='true'] {
+  transition-delay: calc(var(--story-step, 0) * 70ms);
 }
 
 .story-steps li[data-active='true'] {
   border-color: var(--blue);
   background: var(--surface);
+  box-shadow:
+    0 0 0 1px rgb(102 173 255 / .25),
+    0 22px 46px rgb(0 0 0 / .28);
 }
 
 .story-index {
@@ -183,27 +203,50 @@
   color: var(--muted);
   font-size: .875rem;
   font-weight: 700;
+  transition:
+    border-color var(--duration-standard) var(--ease-standard),
+    color var(--duration-standard) var(--ease-standard),
+    box-shadow var(--duration-emphasized) var(--ease-standard);
+}
+
+.story-steps li[data-passed='true'] .story-index {
+  border-color: var(--blue);
+  color: var(--blue);
 }
 
 .story-steps li[data-active='true'] .story-index {
   border-color: var(--blue);
   color: var(--blue);
+  box-shadow: 0 0 0 5px rgb(102 173 255 / .16);
 }
 
-/* The rail: a thin line down the marker column, connecting the states. */
-.story-steps li:not(:last-child) {
-  position: relative;
-}
-
-.story-steps li:not(:last-child)::after {
+/* The rail: a thin track down the marker column, connecting the states, plus a
+   blue fill that grows to the active step as the reader scrolls through. */
+.story-steps li:not(:last-child)::after,
+.story-steps li:not(:last-child)::before {
   content: '';
   position: absolute;
   top: calc(var(--space-5) + 44px);
   left: calc(var(--space-5) + 18px);
-  width: 1px;
+  width: 2px;
   /* Reaches exactly one grid gap past the card, meeting the next marker. */
   height: calc(100% - 44px);
+}
+
+.story-steps li:not(:last-child)::after {
   background: var(--line);
+}
+
+.story-steps li:not(:last-child)::before {
+  z-index: 1;
+  background: var(--blue);
+  transform: scaleY(0);
+  transform-origin: top;
+  transition: transform var(--duration-slow) var(--ease-standard);
+}
+
+.story-steps li[data-passed='true']:not(:last-child)::before {
+  transform: scaleY(1);
 }
 
 .story-body {
@@ -451,7 +494,8 @@
     gap: var(--space-4);
   }
 
-  .story-steps li:not(:last-child)::after {
+  .story-steps li:not(:last-child)::after,
+  .story-steps li:not(:last-child)::before {
     display: none;
   }
 
