@@ -18,6 +18,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         poppler-utils=22.12.0-2+deb12u2 \
         tesseract-ocr=5.3.0-2 \
+        ca-certificates=20230311+deb12u1 \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /out/invoiceflow-api /app/invoiceflow-api

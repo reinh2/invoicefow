@@ -37,6 +37,15 @@ type Worker struct {
 	Lease         time.Duration
 	RetryDelay    time.Duration
 	WebhookSender WebhookDeliverySender
+
+	// OnProviderError optionally reports a structured-extraction provider
+	// failure to the operator. The persisted job summary is deliberately
+	// generic, which leaves an operator with no way to tell a provider
+	// rejection from a quota or transport problem. Only provider errors whose
+	// messages are bounded and secret-free by construction (see ADR-014) are
+	// passed here; tool output, storage paths, document text, and the API key
+	// never reach this hook.
+	OnProviderError func(documentID string, err error)
 }
 
 // RunOnce claims at most one durable process job and records either an
@@ -55,6 +64,7 @@ func (w Worker) RunOnce(ctx context.Context) (bool, error) {
 	if err == nil {
 		return true, w.Repository.FinishExtraction(ctx, claimed.ID, claimed.LeaseToken, snapshot)
 	}
+	w.reportProviderError(claimed.DocumentID, err)
 	summary := processingErrorSummary(err)
 	if permanentProcessingError(err) {
 		return true, w.Repository.FinishPermanent(ctx, claimed.ID, claimed.LeaseToken, summary)
@@ -136,9 +146,13 @@ func (w Worker) extract(ctx context.Context, documentID string) (ExtractionSnaps
 	normalized, warnings := invoices.NormalizeProposal(proposal)
 	proposalJSON, _ := json.Marshal(proposal)
 	normalizedJSON, _ := json.Marshal(normalized)
-	warningsJSON, _ := json.Marshal(warnings)
-	evidenceJSON, _ := json.Marshal(proposal.Evidence)
-	diagnosticsJSON, _ := json.Marshal(proposal.Diagnostics)
+	// The snapshot columns are constrained to JSON arrays. An adapter that
+	// asserts no evidence (or a document with no warnings) leaves a nil slice,
+	// which would marshal to `null` and violate that constraint, so always
+	// encode an empty array.
+	warningsJSON, _ := json.Marshal(jsonArray(warnings))
+	evidenceJSON, _ := json.Marshal(jsonArray(proposal.Evidence))
+	diagnosticsJSON, _ := json.Marshal(jsonArray(proposal.Diagnostics))
 	return ExtractionSnapshot{Currency: normalized.Currency, TotalMinor: normalized.Total, RoundingPolicyVersion: normalized.RoundingPolicyVersion, Proposal: proposalJSON, Normalized: normalizedJSON, Warnings: warningsJSON, Evidence: evidenceJSON, Diagnostics: diagnosticsJSON}, nil
 }
 
@@ -160,6 +174,15 @@ func (w Worker) ocr(ctx context.Context, document ProcessDocument) ([]extraction
 	result, err := w.OCR.ExtractOCR(ctx, extraction.DocumentInput{SHA256: document.SHA256, MediaType: document.MediaType, SizeBytes: document.SizeBytes, Reader: reader}, w.Limits)
 	return result.Pages, err
 }
+
+// jsonArray returns a non-nil slice so encoding yields `[]` rather than `null`.
+func jsonArray[T any](values []T) []T {
+	if values == nil {
+		return []T{}
+	}
+	return values
+}
+
 func hasUsableText(pages []extraction.PageText) bool {
 	for _, page := range pages {
 		if strings.TrimSpace(page.Text) != "" {
@@ -178,6 +201,19 @@ func maxDuration(left, right time.Duration) time.Duration {
 func permanentProcessingError(err error) bool {
 	return errors.Is(err, extraction.ErrMalformedPDF) || errors.Is(err, extraction.ErrEncryptedPDF) || errors.Is(err, extraction.ErrInputTooLarge) || errors.Is(err, extraction.ErrTooManyPages) || errors.Is(err, extraction.ErrReferenceTooLarge) || errors.Is(err, extraction.ErrProcessOutputTooLarge) || errors.Is(err, extraction.ErrProviderOutputTooLarge) || errors.Is(err, extraction.ErrTooManyLineItems) || errors.Is(err, extraction.ErrTooManyEvidence) || errors.Is(err, extraction.ErrTooManyDiagnostics) || errors.Is(err, extraction.ErrInvalidProposalSchema) || errors.Is(err, extraction.ErrInvalidInput) || errors.Is(err, extraction.ErrUnsupportedOCR)
 }
+
+// reportProviderError forwards only the provider-exchange errors that carry no
+// secret by design. Every other failure keeps its generic summary.
+func (w Worker) reportProviderError(documentID string, err error) {
+	if w.OnProviderError == nil {
+		return
+	}
+	if !errors.Is(err, extraction.ErrOpenAIRequest) && !errors.Is(err, extraction.ErrOpenAIConfiguration) {
+		return
+	}
+	w.OnProviderError(documentID, err)
+}
+
 func processingErrorSummary(err error) string {
 	switch {
 	case errors.Is(err, extraction.ErrMalformedPDF):

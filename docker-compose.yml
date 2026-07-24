@@ -42,6 +42,12 @@ services:
       WEBHOOK_URL: http://receiver:8090/webhook
       WEBHOOK_MODE: controlled
       WEBHOOK_SECRET: local-demo-webhook-secret
+      # Structured extractor. Defaults keep the offline fake path; set EXTRACTOR
+      # and OPENAI_API_KEY in your environment (never commit a key) to opt in.
+      EXTRACTOR: ${EXTRACTOR:-fake}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
     volumes:
       - document_data:/data
     depends_on:

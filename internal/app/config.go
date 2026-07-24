@@ -29,6 +29,13 @@ type Config struct {
 	// WebDir points at one pre-built browser bundle (ADR-013). Empty means the
 	// process serves the JSON API only.
 	WebDir string
+	// Extractor selects the structured-extraction provider. "fake" (the default)
+	// is the deterministic offline demo path; "openai" opts in to a live
+	// provider and requires OpenAIAPIKey. Only the worker consumes these.
+	Extractor     string
+	OpenAIAPIKey  string
+	OpenAIModel   string
+	OpenAIBaseURL string
 }
 
 func LoadConfig() (Config, error) {
@@ -43,9 +50,19 @@ func LoadConfig() (Config, error) {
 		WebhookURL:    os.Getenv("WEBHOOK_URL"),
 		WebhookMode:   envOr("WEBHOOK_MODE", "strict"),
 		WebDir:        os.Getenv("WEB_DIR"),
+		Extractor:     envOr("EXTRACTOR", "fake"),
+		OpenAIAPIKey:  os.Getenv("OPENAI_API_KEY"),
+		OpenAIModel:   os.Getenv("OPENAI_MODEL"),
+		OpenAIBaseURL: os.Getenv("OPENAI_BASE_URL"),
 	}
 	if c.DemoActor == "" {
 		return Config{}, fmt.Errorf("demo actor must not be empty")
+	}
+	if c.Extractor != "fake" && c.Extractor != "openai" {
+		return Config{}, fmt.Errorf("EXTRACTOR must be fake or openai")
+	}
+	if c.Extractor == "openai" && c.OpenAIAPIKey == "" {
+		return Config{}, fmt.Errorf("EXTRACTOR=openai requires a non-empty OPENAI_API_KEY")
 	}
 	if c.WebhookMode != "strict" && c.WebhookMode != "controlled" {
 		return Config{}, fmt.Errorf("WEBHOOK_MODE must be strict or controlled")

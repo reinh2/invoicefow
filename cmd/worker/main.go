@@ -43,10 +43,9 @@ func main() {
 	}
 	repository := processing.NewRepository(pool)
 	limits := extraction.DefaultLimits()
-	fixtures := defaultFakeFixtures()
-	fake, err := extraction.NewFakeStructuredExtractor(fixtures)
+	structured, err := buildStructuredExtractor(config)
 	if err != nil {
-		logger.Error("fake extractor configuration failed", "error", err)
+		logger.Error("structured extractor configuration failed", "error", err)
 		os.Exit(1)
 	}
 	var sender *export.WebhookSender
@@ -59,8 +58,11 @@ func main() {
 		Repository: repository, Storage: storage,
 		Text:       extraction.PDFTextExtractor{TemporaryDir: storage.TemporaryDirectory()},
 		OCR:        extraction.TesseractOCR{TemporaryDir: storage.TemporaryDirectory()},
-		Structured: fake, Limits: limits, Lease: 45 * time.Second, RetryDelay: 15 * time.Second,
+		Structured: structured, Limits: limits, Lease: 45 * time.Second, RetryDelay: 15 * time.Second,
 		WebhookSender: sender,
+		OnProviderError: func(documentID string, err error) {
+			logger.Error("structured extraction provider failed", "document_id", documentID, "error", err.Error())
+		},
 	}
 	maintain := func() {
 		maintenanceCtx, maintenanceCancel := context.WithTimeout(ctx, config.DBTimeout)
@@ -82,7 +84,7 @@ func main() {
 		}
 	}
 	maintain()
-	logger.Info("worker ready; Stage 3 extraction and Stage 5 webhook export execution enabled")
+	logger.Info("worker ready; Stage 3 extraction and Stage 5 webhook export execution enabled", "extractor", config.Extractor)
 	maintenanceTicker := time.NewTicker(5 * time.Minute)
 	defer maintenanceTicker.Stop()
 	jobTicker := time.NewTicker(time.Second)
@@ -111,6 +113,21 @@ func main() {
 		}
 	}()
 	<-ctx.Done()
+}
+
+// buildStructuredExtractor selects the structured-extraction provider from
+// server configuration. "fake" is the deterministic offline default; "openai"
+// is an opt-in live provider. The API key never leaves configuration here and
+// is not logged.
+func buildStructuredExtractor(config app.Config) (extraction.StructuredExtractor, error) {
+	if config.Extractor == "openai" {
+		return extraction.NewOpenAIStructuredExtractor(extraction.OpenAIOptions{
+			APIKey:  config.OpenAIAPIKey,
+			Model:   config.OpenAIModel,
+			BaseURL: config.OpenAIBaseURL,
+		})
+	}
+	return extraction.NewFakeStructuredExtractor(defaultFakeFixtures())
 }
 
 func ptr(value string) *string { return &value }

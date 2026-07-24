@@ -176,3 +176,76 @@ The landing page describes only shipped behavior. It contains no metric, custome
 **Consequences:** `docker compose up` now yields a complete demonstrable product on one loopback port, and real product media can be captured from it. This is asset delivery only: it adds no authentication, no session, no user-supplied content rendering, and no multi-user authorization claim. Production deployments would still place their own TLS termination, cache, and access control in front of this boundary.
 
 **Amendment (Stage 6 review).** The project code and security reviewers audited this boundary and found no high-severity issue; traversal, symlink escape, directory listing, content-type spoofing, and route confusion for real endpoints are structurally prevented. Two refinements were applied from that review. First, the fallback is registered on the bare `/` pattern (all methods) instead of `GET /`, so the reserved-prefix guard runs for every method: an unmatched or method-mismatched `/api/`, `/healthz`, or `/readyz` request now returns the JSON `route_not_found` envelope for any method (previously a non-GET request received Go's bare `405`), while method-specific API routes still win by specificity and a non-GET request to a non-reserved client path is a hardened `405`. The reserved-prefix check is case-insensitive. Second, the CSP tightens `object-src` to `'none'`, the 405 path emits the full hardened header set, and the load byte-budget is enforced against the bytes actually read. New tests in `cmd/api` and `internal/webui` cover the all-method envelope and the header/limit changes.
+
+## ADR-014 — Optional live OpenAI structured-extraction provider
+
+**Status:** Accepted
+
+**Context:** Through Stage 7 the only structured extractor was the deterministic
+`FakeStructuredExtractor`, which keeps the no-key demo runnable but never
+exercises a real model. The `StructuredExtractor` port (ADR-010) was always
+designed so a live provider could be added behind it without changing the
+server's validation, normalization, evidence, or audit guarantees. Adding one
+is user-directed and must not weaken any of those boundaries or the no-key
+default.
+
+**Decision:** Add `OpenAIStructuredExtractor`, an opt-in adapter behind the
+existing `StructuredExtractor` interface. It is selected only when
+`EXTRACTOR=openai`; the default remains `fake`, so a clean build and the whole
+test suite never require a key or a network call. `EXTRACTOR=openai` requires a
+non-empty `OPENAI_API_KEY`; the model (`OPENAI_MODEL`, default `gpt-4o-mini`)
+and base URL (`OPENAI_BASE_URL`, default `https://api.openai.com/v1`) are server
+configuration. The key lives only in process configuration, is sent solely in
+the `Authorization` header, and is never logged, returned in an error, or placed
+in a proposal.
+
+The adapter reuses every existing trust boundary rather than adding a new one.
+It calls Chat Completions with `temperature: 0` and a strict `json_schema`
+response format that mirrors exactly the fields `DecodeProposalJSON` accepts, so
+the reply decodes through the same unknown-field-rejecting strict decoder and
+the same `Limits` byte/line/evidence bounds. The document reference text is sent
+as clearly delimited untrusted data with a system instruction to ignore any
+instruction inside it. Input is already bounded by `ValidateStructuredInput`;
+the response read is bounded to `MaxProviderOutputBytes` plus a small envelope
+allowance, and the parsed content is re-bounded by `ValidateProposal`. The
+adapter never asserts evidence — it cannot prove a source excerpt — so it drops
+any model-supplied evidence and lets the worker's normalizer, evidence check,
+and diagnostic sanitizer run unchanged. A non-200 status, refusal, empty
+content, oversized body, or schema violation is a bounded extraction error that
+flows into the existing retry/dead-letter path.
+
+**Consequences:** The full pipeline can now run against a real model without any
+change to server authority: the model still cannot control identity, storage,
+status, approval, export, or secrets, and every value it returns is validated
+and normalized server-side. The default demo is unchanged and remains offline.
+Outbound network access in the default extraction path is still disabled
+(ADR-006); it is enabled only for this explicitly opted-in provider. Rate-limit
+and auth failures are treated as generic extraction errors rather than being
+finely classified; that refinement is deferred.
+
+**Amendment (live verification).** A first live run against `gpt-4o-mini`
+surfaced three defects, all outside the adapter itself, now fixed.
+
+1. The persisted job summary is generic by design, so the actual provider
+   failure was invisible to an operator. `Worker.OnProviderError` is a narrow
+   optional hook that forwards only `ErrOpenAIRequest`/`ErrOpenAIConfiguration`
+   — the two errors whose messages are bounded and secret-free by construction.
+   `cmd/worker` logs them with the document id. Tool output, storage paths,
+   document text, and the API key never reach it.
+2. The runtime image installed no `ca-certificates`, so every outbound TLS
+   handshake failed. Nothing before this needed public TLS (the fake extractor
+   is offline, the Compose receiver is plain HTTP), so the gap was invisible.
+   The Dockerfile now installs `ca-certificates=20230311+deb12u1`, pinned like
+   the other runtime packages.
+3. An adapter that asserts no evidence leaves a nil slice, which marshalled to
+   JSON `null` and violated the `invoice_versions_extraction_snapshot_shape`
+   check constraint. The worker now encodes evidence, diagnostics, and warnings
+   through a non-nil slice, so any adapter is safe.
+
+With those fixed, a live run reaches `needs_review` with correct supplier,
+invoice number, dates, subtotal, tax, total, and per-line quantities and unit
+prices. The committed fixtures print no currency anywhere, so a live model
+correctly returns `currency: null` and the server emits
+`missing_or_invalid_currency` warnings; that is the designed
+never-invent-a-value behavior, not an extraction fault. The keyed offline fake
+supplies a currency, so the no-key demo is unaffected.

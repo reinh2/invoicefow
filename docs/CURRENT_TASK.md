@@ -46,7 +46,31 @@ Stage 5 — explicit approval and export (CSV and signed webhook) is `PASS`. The
 
 ## Deliberately not implemented
 
-There is no invoice payment, bank connectivity, live AI provider, user-configurable webhook destination, production authentication, document list/search, manual retry endpoint, or raster OCR for scanned PDFs.
+There is no invoice payment, bank connectivity, user-configurable webhook destination, production authentication, document list/search, manual retry endpoint, or raster OCR for scanned PDFs.
+
+## Optional live extractor (ADR-014)
+
+The default structured extractor is still the deterministic offline `fake`
+provider, so the no-key demo, a clean build, and the whole test suite need no
+key or network. Setting `EXTRACTOR=openai` with a non-empty `OPENAI_API_KEY`
+opts in to `internal/extraction/openai.go`, a live OpenAI adapter behind the
+existing `StructuredExtractor` port. It requests strict `json_schema` output,
+reuses the same strict decoder, `Limits`, evidence check, normalizer, and
+diagnostic sanitizer as the fake path, sends the document text as delimited
+untrusted data, asserts no evidence, and never logs or returns the key. Model
+(`OPENAI_MODEL`, default `gpt-4o-mini`) and base URL (`OPENAI_BASE_URL`) are
+server configuration. Covered by `internal/extraction/openai_test.go`.
+
+This path was verified against the real API on 24 July 2026: a fictional text
+PDF uploaded to the Compose demo with `EXTRACTOR=openai` reached `needs_review`
+with supplier, invoice number, both dates, subtotal, tax, total, and every line
+item's quantity and unit price extracted correctly. Three defects found by that
+run are fixed and recorded in the ADR-014 amendment: the operator could not see
+why extraction failed (`Worker.OnProviderError`), the runtime image had no
+`ca-certificates` so all outbound TLS failed, and a nil evidence slice encoded
+as JSON `null` and violated the snapshot shape constraint. The fixtures print no
+currency, so a live model returns `currency: null` and the server warns — the
+intended never-invent behavior. The offline `fake` default is unchanged.
 
 ## Validation target
 
