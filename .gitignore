@@ -10,16 +10,37 @@ uploads/
 storage/
 tmp/
 backups/
+var/
 
+# Go build and test output.
 bin/
 coverage.out
+coverage.html
+*.test
+*.prof
+
 node_modules/
 web/dist/
 web/coverage/
+*.tsbuildinfo
+# Playwright end-to-end artifacts (traces, reports). The spec is committed; its
+# output is not.
+web/test-results/
+web/playwright-report/
+web/blob-report/
 
-.claude/settings.local.json
+# Editor and OS noise.
 .DS_Store
+Thumbs.db
 .idea/
+.vscode/
+*.swp
+
+# Per-machine agent-tool state. The checked-in .claude/agents/, .claude/commands/,
+# and settings.example.json are shared project configuration and stay tracked;
+# these two are local to whoever is running the tool.
+.claude/settings.local.json
+.claude/launch.json
 
 # Local coding-agent harness (master prompts, per-tool agent packs). Useful
 # while developing, but it is not part of the product and should not be the

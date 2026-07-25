@@ -1,4 +1,4 @@
-.PHONY: fmt lint test test-integration frontend-test build build-go build-web up smoke-compose check agent-pack \
+.PHONY: fmt lint test test-integration frontend-test test-e2e build build-go build-web up smoke-compose check agent-pack \
 	dev dev-db dev-api dev-worker dev-receiver dev-web
 
 fmt:
@@ -16,6 +16,19 @@ test-integration:
 
 frontend-test:
 	cd web && npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build
+
+# Browser end-to-end tests. Unlike every other target these need a *running*
+# demo, so they are deliberately not part of `check`. Point them at an isolated
+# instance, never the default persistent one:
+#
+#   COMPOSE_PROJECT_NAME=invoiceflow-e2e API_HOST_PORT=18082 \
+#     POSTGRES_HOST_PORT=15434 RECEIVER_HOST_PORT=18092 \
+#     docker compose up --build --wait
+#   E2E_BASE_URL=http://127.0.0.1:18082 make test-e2e
+#
+# One-time browser install: npm --prefix web exec -- playwright install chromium
+test-e2e:
+	cd web && npm run test:e2e
 
 # build-go needs no Node toolchain, so a Go-only environment can use it. build
 # keeps its full meaning for a local release gate.

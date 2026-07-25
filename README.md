@@ -31,7 +31,7 @@
 
 </div>
 
-> **Status / Статус:** a working end-to-end demo, not a released product. Stages 0–7 are complete. The default demo runs fully offline with no API keys. · Рабочее демо от начала до конца, а не готовый продукт. Этапы 0–7 завершены. Демо по умолчанию работает полностью офлайн, без API-ключей.
+> **Status / Статус:** a working end-to-end demo, not a released product. Stages 0–8 are complete except operating a public instance, which is the repository owner's action. The default demo runs fully offline with no API keys. · Рабочее демо от начала до конца, а не готовый продукт. Этапы 0–8 завершены, кроме самого публичного стенда — это действие владельца репозитория. Демо по умолчанию работает полностью офлайн, без API-ключей.
 
 ---
 
@@ -250,7 +250,7 @@ These are current boundaries of the running system, not a roadmap. · Это т�
 | **Heuristic limits** | The regex reader skips locale-ambiguous slash dates (`03/04/2026`), reads per-line tax as unknown rather than zero, and proposes a supplier name only when another field corroborates it. | Regex-ридер пропускает неоднозначные даты через слэш (`03/04/2026`), не считает построчный налог нулём и предлагает поставщика только при подтверждении другим полем. |
 | **OCR** | JPEG/PNG go through Tesseract; raster OCR for scanned PDFs is intentionally not implemented. | JPEG/PNG идут через Tesseract; растровый OCR для сканированных PDF намеренно не реализован. |
 | **Webhooks** | At-least-once delivery; "exactly once" is not claimed. | Доставка at-least-once; «ровно один раз» не заявляется. |
-| **Scope** | No document list/search, no manual retry endpoint, no metrics endpoint. | Нет списка/поиска документов, ручного ретрая и эндпоинта метрик. |
+| **Scope** | No document search and no manual retry endpoint. A bounded, keyset-paginated document list exists (`GET /api/v1/documents`), and the worker exposes basic metrics on an opt-in private listener (`METRICS_ADDR`, off by default). | Нет поиска по документам и ручного ретрая. Список документов с keyset-пагинацией есть (`GET /api/v1/documents`), а worker отдаёт базовые метрики на отдельном приватном адресе (`METRICS_ADDR`, по умолчанию выключен). |
 | **Deployment** | Loopback demo; the Compose bootstrap role serves both migrations and runtime (not least-privilege). | Демо на loopback; роль bootstrap обслуживает и миграции, и рантайм (не least-privilege). |
 
 No metric, customer, accuracy rate, or certification is asserted anywhere, because none has been measured. · Нигде не заявляются метрики, клиенты, точность или сертификация — потому что они не измерялись.

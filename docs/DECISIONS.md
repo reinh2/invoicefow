@@ -382,3 +382,119 @@ limitation — a shared, unauthenticated, disposable workspace — is stated in 
 product itself, not only in the README, so a visitor cannot mistake it for a
 multi-tenant application. Adding real authentication remains the separate P0
 backlog item it always was.
+
+**Amendment (Stage 9) — the deployment shape is now committed, and the webhook
+receiver stays.** The guidance above left the platform open. In practice one
+constraint decides it: there is no S3 adapter, so `STORAGE_DIR` is a filesystem
+that the API and the worker must both open, and most PaaS offerings attach a
+disk to exactly one service. Satisfying them would mean a supervisor process
+starting both binaries in one container — new code, and a new failure mode where
+nothing restarts a dead worker. A single host running the committed Compose
+files needs none of that, so that is the documented shape:
+`docker-compose.public.yml` plus `deploy/` (nginx, reset script, systemd timer).
+
+Three points of that override are decisions rather than mechanics.
+
+First, the **per-visitor rate limit moves to the proxy**. This ADR has always
+said a deployment behind a proxy must limit at that proxy; the override makes
+the consequence explicit rather than implied. Because `X-Forwarded-For` is not
+trusted, every request behind the proxy reaches the process with one peer
+address, so `UPLOAD_RATE_PER_MINUTE` bounds the *instance*, not the visitor. It
+is kept as a backstop and set accordingly; `deploy/nginx/invoiceflow.conf`
+carries the real limit, with a separate and much stricter zone for
+`POST /api/v1/documents` — the only expensive, state-creating route.
+
+Second, the **controlled webhook receiver is retained**, which reverses this
+document's earlier instruction to leave `WEBHOOK_URL` unset on a public
+instance. That instruction was aimed at pointing a public demo at a *real*
+external destination. The Compose receiver is not one: it is the exact fixed
+internal destination of ADR-012, unreachable from outside the Compose network,
+and it verifies signature, timestamp window, and idempotency key before
+accepting a request. Leaving it unconfigured would make the signed-webhook
+export — retries, dead-lettering, audit — invisible to every visitor, which
+removes a large part of what the project demonstrates. The real hazard was never
+the destination but the secret: `docker-compose.yml` ships
+`local-demo-webhook-secret`, which is committed and therefore public, so the
+override *requires* an explicit `WEBHOOK_SECRET` and refuses to start without
+one.
+
+Third, **ephemerality comes from the scheduled reset**, not from the absence of
+a volume. The earlier text called for container-local storage, which cannot work
+when two containers must share the directory. Postgres runs with no volume at
+all; `document_data` remains a named volume and is destroyed nightly by
+`deploy/reset.sh`. The override also pins `EXTRACTOR=fake` and blanks the OpenAI
+variables, because the base file reads them from the host environment and an
+inherited key must neither opt the instance in nor be handed to a container that
+has no use for it.
+
+None of this deploys anything. No public instance is operated and no URL is
+claimed anywhere in this repository.
+
+## ADR-017 — Request tracing and an operational metrics endpoint
+
+**Status:** Accepted (Stage 9)
+
+**Context:** Every JSON error envelope has always carried a `request_id`, but
+`writeAPIError` generated it at the moment of writing and nothing logged it. The
+affordance existed and the trace did not: a user could report an id that no
+search would ever find. The API had no access logging at all — `slog` was used
+only for process start and stop.
+
+Separately, `AGENTS.md` lists "Health, readiness, structured logs, and basic
+metrics" in the MVP scope. The first three existed; metrics did not. That was
+the only place where the project failed its own declaration, and the gap was
+closed by a line in the README's limitations table rather than by code.
+
+**Decision:** One middleware assigns a request id **at the edge**, before any
+handler runs. It publishes the id in `X-Request-Id`, puts it in the request
+context, and emits exactly one structured line per request:
+`method / path / status / duration_ms / request_id`. `writeAPIError` reads the
+id from the context instead of minting its own, so the value a client quotes is
+the value in the header and the value in the log.
+
+Only server-derived or sanitized values are logged. The path is client
+controlled, so it is truncated and reduced to printable ASCII, and the query
+string is dropped entirely; request bodies, uploaded filenames, storage keys,
+document text, and secrets never reach the log (the `AGENTS.md` sanitization
+rule). When the middleware is absent — a handler constructed directly in a test
+— `requestID` falls back to a fresh id so an envelope is never issued without
+one.
+
+Metrics are a small dependency-free registry (`internal/metrics`) rendering the
+Prometheus text format. Counters and gauges carry at most one label dimension,
+and every label value is a server-owned constant (a job outcome) or a database
+status, so cardinality is bounded by code rather than by data. The instruments
+are: `invoiceflow_process_jobs_total` and `invoiceflow_export_jobs_total` by
+terminal outcome (`success`, `retry`, `dead_letter`),
+`invoiceflow_extraction_duration_seconds` as a histogram whose bounds bracket
+the configured PDF (15 s) and OCR (30 s) timeouts, and two gauges,
+`invoiceflow_documents` and `invoiceflow_jobs`, by status. Queue depth is the
+`ready` series of the latter.
+
+The counters are reported by optional `Worker` hooks that fire **only after the
+durable transition committed**, so a counter never claims an outcome the
+database did not record. To make `dead_letter` exact rather than inferred,
+`FinishRetry` and `FinishExportRetry` now return the outcome they committed;
+their behaviour is otherwise unchanged. The two gauges are collected at scrape
+time from `SELECT status, count(*)`, not counted in memory, so a restarted
+worker reports the truth immediately instead of counting up from zero. A gauge
+whose query fails is rendered as a comment and suppresses only itself; one
+database hiccup must not blind every metric, and the driver's message never
+reaches the exposition.
+
+The endpoint is served by the **worker** process — the process that owns the
+jobs and the database view — on its own listener, `METRICS_ADDR`, which is
+**empty by default**, so no listener is opened at all unless an operator asks
+for one. It has no authentication of its own and reveals traffic volume and
+queue depth, so configuration refuses an address equal to `API_ADDR`: that is
+the one mistake that would silently publish operational volume on the public
+instance of ADR-016. A deployment must bind it to an address that is not
+publicly reachable.
+
+**Consequences:** A reported `request_id` is now findable, and the project meets
+the observability line in its own MVP scope. Nothing about domain authority,
+the database schema, or the public data contract changes: the middleware writes
+one header and one log line, and the metrics endpoint is read-only, aggregate,
+and off by default. This is not a full observability stack — there is no
+tracing, no exemplars, no per-route latency histogram, and no alerting — and
+none of those is claimed.

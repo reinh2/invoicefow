@@ -16,5 +16,8 @@ export default defineConfig({
     setupFiles: './src/test/setup.ts',
     css: true,
     globals: true,
+    // e2e/ belongs to Playwright, which needs a running instance. Vitest would
+    // otherwise collect those specs and fail on Playwright's own test().
+    exclude: ['node_modules/**', 'dist/**', 'e2e/**'],
   },
 });

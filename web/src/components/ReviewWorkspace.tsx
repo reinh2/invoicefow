@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactElement } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, type ReactElement } from 'react';
 import {
   approveReviewDocument,
   downloadCSV,
@@ -7,9 +7,7 @@ import {
   saveHumanReview,
   triggerWebhookExport,
   UploadRequestError,
-  type EditableProposal,
   type ExportRecord,
-  type ReviewDocument,
 } from '../api/documents';
 import { StatusTag, type StatusTone } from './StatusTag';
 import { ConfirmDialog } from './review/ConfirmDialog';
@@ -17,76 +15,46 @@ import { ReviewContext } from './review/ReviewContext';
 import { ReviewForm } from './review/ReviewForm';
 import { ReviewMessage } from './review/ReviewMessage';
 import { SourcePanel } from './review/SourcePanel';
+import { initialReviewState, reviewReducer, type PendingAction } from './review/reviewState';
 
-/* This component owns review state and the transitions a human can trigger.
-   Presentation lives in ./review/*: the source panel, the editable form and its
+/* This component drives the review state machine and the transitions a human
+   can trigger. The state shape and every transition live in ./review/reviewState;
+   presentation lives in ./review/*: the source panel, the editable form and its
    per-field warnings, the derived server context, and the confirmation dialog
    every irreversible action goes through. */
-
-const blankProposal = (): EditableProposal => ({
-  supplier_name: '',
-  supplier_email: '',
-  invoice_number: '',
-  issue_date: '',
-  due_date: '',
-  currency: '',
-  subtotal: '',
-  tax_amount: '',
-  total: '',
-  line_items: [],
-});
-
-const cloneProposal = (proposal: EditableProposal): EditableProposal => ({
-  ...proposal,
-  line_items: proposal.line_items.map((line) => ({ ...line })),
-});
 
 const webhookStatusRefreshIntervalMs = 1500;
 const maxWebhookStatusRefreshes = 10;
 
 export function ReviewWorkspace({ documentID }: { documentID: string }): ReactElement {
-  const [document, setDocument] = useState<ReviewDocument>();
-  const [error, setError] = useState<string>();
-  const [reload, setReload] = useState(0);
-  const [proposal, setProposal] = useState<EditableProposal>(blankProposal);
-  const [savedProposal, setSavedProposal] = useState<EditableProposal>(blankProposal);
-  const [saving, setSaving] = useState(false);
-  const [showReject, setShowReject] = useState(false);
-  const [rejecting, setRejecting] = useState(false);
-  const [showApprove, setShowApprove] = useState(false);
-  const [approving, setApproving] = useState(false);
-  const [showWebhookConfirm, setShowWebhookConfirm] = useState(false);
-  const [showCSVConfirm, setShowCSVConfirm] = useState(false);
-  const [exportingWebhook, setExportingWebhook] = useState(false);
-  const [exportingCSV, setExportingCSV] = useState(false);
-  const [webhookMessage, setWebhookMessage] = useState<string>();
-  const [csvMessage, setCSVMessage] = useState<string>();
-  const [watchedWebhookExportID, setWatchedWebhookExportID] = useState<string>();
-  const [webhookStatusRefreshes, setWebhookStatusRefreshes] = useState(0);
-  const [webhookRefreshError, setWebhookRefreshError] = useState<string>();
+  const [state, dispatch] = useReducer(reviewReducer, initialReviewState);
+  const {
+    document,
+    proposal,
+    savedProposal,
+    error,
+    reload,
+    pending,
+    confirming,
+    csvMessage,
+    webhookMessage,
+    webhookRefreshError,
+    watchedWebhookExportID,
+    webhookStatusRefreshes,
+  } = state;
 
   useEffect(() => {
     const controller = new AbortController();
     const hasExistingDocument = document !== undefined;
     void getReviewDocument(documentID, controller.signal)
-      .then((next) => {
-        setDocument(next);
-        setError(undefined);
-        setWebhookRefreshError(undefined);
-        const editable = next.versions[0]?.editable ?? blankProposal();
-        setProposal(cloneProposal(editable));
-        setSavedProposal(cloneProposal(editable));
-      })
+      .then((next) => dispatch({ type: 'loaded', document: next }))
       .catch((requestError: unknown) => {
         if (controller.signal.aborted) return;
         const message =
           requestError instanceof UploadRequestError
             ? requestError.message
             : 'InvoiceFlow could not load this review. Try again.';
-        // A failed background refresh must not blank out a review the user is
-        // already working in.
-        if (hasExistingDocument) setWebhookRefreshError(message);
-        else setError(message);
+        dispatch({ type: 'load_failed', message, background: hasExistingDocument });
       });
     return () => controller.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -129,117 +97,95 @@ export function ReviewWorkspace({ documentID }: { documentID: string }): ReactEl
     ) {
       return;
     }
-    const timer = window.setTimeout(() => {
-      setWebhookStatusRefreshes((value) => value + 1);
-      setReload((value) => value + 1);
-    }, webhookStatusRefreshIntervalMs);
+    const timer = window.setTimeout(
+      () => dispatch({ type: 'poll' }),
+      webhookStatusRefreshIntervalMs,
+    );
     return () => window.clearTimeout(timer);
   }, [dirty, watchedWebhookExportID, watchedWebhookTerminal, webhookStatusRefreshes]);
 
-  const save = async (): Promise<void> => {
-    if (!latest) return;
-    setSaving(true);
-    setError(undefined);
-    try {
-      await saveHumanReview(documentID, latest.version_number, proposal);
-      setReload((value) => value + 1);
-    } catch (requestError: unknown) {
-      setError(
-        requestError instanceof UploadRequestError
-          ? requestError.message
-          : 'InvoiceFlow could not save this correction. Try again.',
-      );
-    } finally {
-      setSaving(false);
-    }
+  /* Every action shares one shape: mark itself pending, run one request, and
+     report either a failure or its own success transition. */
+  const run = useCallback(
+    async (
+      action: PendingAction,
+      request: () => Promise<void>,
+      fallbackMessage: string,
+    ): Promise<void> => {
+      dispatch({ type: 'start', action });
+      try {
+        await request();
+      } catch (requestError: unknown) {
+        dispatch({
+          type: 'action_failed',
+          message:
+            requestError instanceof UploadRequestError ? requestError.message : fallbackMessage,
+        });
+      }
+    },
+    [],
+  );
+
+  const save = (): Promise<void> => {
+    if (!latest) return Promise.resolve();
+    return run(
+      'save',
+      async () => {
+        await saveHumanReview(documentID, latest.version_number, proposal);
+        dispatch({ type: 'saved' });
+      },
+      'InvoiceFlow could not save this correction. Try again.',
+    );
   };
 
-  const reject = async (): Promise<void> => {
-    setRejecting(true);
-    setError(undefined);
-    try {
-      await rejectReviewDocument(documentID);
-      setShowReject(false);
-      setReload((value) => value + 1);
-    } catch (requestError: unknown) {
-      setError(
-        requestError instanceof UploadRequestError
-          ? requestError.message
-          : 'InvoiceFlow could not reject this document. Try again.',
-      );
-    } finally {
-      setRejecting(false);
-    }
+  const reject = (): Promise<void> =>
+    run(
+      'reject',
+      async () => {
+        await rejectReviewDocument(documentID);
+        dispatch({ type: 'completed' });
+      },
+      'InvoiceFlow could not reject this document. Try again.',
+    );
+
+  const approve = (): Promise<void> => {
+    if (!latest) return Promise.resolve();
+    return run(
+      'approve',
+      async () => {
+        await approveReviewDocument(documentID, latest.version_number);
+        dispatch({ type: 'completed' });
+      },
+      'InvoiceFlow could not approve this version. Try again.',
+    );
   };
 
-  const approve = async (): Promise<void> => {
-    if (!latest) return;
-    setApproving(true);
-    setError(undefined);
-    try {
-      await approveReviewDocument(documentID, latest.version_number);
-      setShowApprove(false);
-      setReload((value) => value + 1);
-    } catch (requestError: unknown) {
-      setError(
-        requestError instanceof UploadRequestError
-          ? requestError.message
-          : 'InvoiceFlow could not approve this version. Try again.',
-      );
-    } finally {
-      setApproving(false);
-    }
-  };
+  const handleWebhookExport = (): Promise<void> =>
+    run(
+      'webhook',
+      async () => {
+        const record = await triggerWebhookExport(documentID);
+        dispatch({
+          type: 'webhook_enqueued',
+          exportID: record.id,
+          message: 'Webhook export queued. Waiting for the worker to report delivery status.',
+        });
+      },
+      'InvoiceFlow could not trigger webhook export. Try again.',
+    );
 
-  const handleWebhookExport = async (): Promise<void> => {
-    setExportingWebhook(true);
-    setError(undefined);
-    setWebhookRefreshError(undefined);
-    setWebhookMessage(undefined);
-    try {
-      const record = await triggerWebhookExport(documentID);
-      setWatchedWebhookExportID(record.id);
-      setWebhookStatusRefreshes(0);
-      setWebhookMessage('Webhook export queued. Waiting for the worker to report delivery status.');
-      setReload((value) => value + 1);
-    } catch (requestError: unknown) {
-      setError(
-        requestError instanceof UploadRequestError
-          ? requestError.message
-          : 'InvoiceFlow could not trigger webhook export. Try again.',
-      );
-    } finally {
-      setExportingWebhook(false);
-    }
-  };
-
-  const refreshWebhookStatus = (): void => {
-    setWebhookRefreshError(undefined);
-    setWebhookStatusRefreshes(0);
-    setReload((value) => value + 1);
-  };
-
-  const handleCSVExport = async (): Promise<void> => {
-    setExportingCSV(true);
-    setError(undefined);
-    setCSVMessage(undefined);
-    try {
-      await downloadCSV(documentID);
-      setCSVMessage(
-        `CSV v1 downloaded for approved version ${document?.approved_version_number ?? latest?.version_number}.`,
-      );
-      setShowCSVConfirm(false);
-      setReload((value) => value + 1);
-    } catch (requestError: unknown) {
-      setError(
-        requestError instanceof UploadRequestError
-          ? requestError.message
-          : 'InvoiceFlow could not create the CSV export. Try again.',
-      );
-    } finally {
-      setExportingCSV(false);
-    }
-  };
+  const handleCSVExport = (): Promise<void> =>
+    run(
+      'csv',
+      async () => {
+        await downloadCSV(documentID);
+        dispatch({
+          type: 'csv_exported',
+          message: `CSV v1 downloaded for approved version ${document?.approved_version_number ?? latest?.version_number}.`,
+        });
+      },
+      'InvoiceFlow could not create the CSV export. Try again.',
+    );
 
   if (error && !document) {
     return (
@@ -247,7 +193,7 @@ export function ReviewWorkspace({ documentID }: { documentID: string }): ReactEl
         tone="danger"
         title="Review unavailable"
         message={error}
-        onRetry={() => setReload((value) => value + 1)}
+        onRetry={() => dispatch({ type: 'reload' })}
       />
     );
   }
@@ -266,7 +212,7 @@ export function ReviewWorkspace({ documentID }: { documentID: string }): ReactEl
         tone="danger"
         title="Processing failed"
         message="This document has no review proposal."
-        onRetry={() => setReload((value) => value + 1)}
+        onRetry={() => dispatch({ type: 'reload' })}
       />
     );
   }
@@ -276,7 +222,7 @@ export function ReviewWorkspace({ documentID }: { documentID: string }): ReactEl
         tone="warning"
         title="No review proposal"
         message="This document is still processing or did not produce an extraction snapshot."
-        onRetry={() => setReload((value) => value + 1)}
+        onRetry={() => dispatch({ type: 'reload' })}
       />
     );
   }
@@ -284,6 +230,7 @@ export function ReviewWorkspace({ documentID }: { documentID: string }): ReactEl
   const editable = document.status === 'needs_review';
   const approvedOrExported = document.status === 'approved' || document.status === 'exported';
   const approvedVersion = document.approved_version_number ?? latest.version_number;
+  const busy = pending !== undefined;
 
   const statusTone: StatusTone =
     document.status === 'rejected' ? 'danger' : approvedOrExported ? 'success' : 'warning';
@@ -361,8 +308,8 @@ export function ReviewWorkspace({ documentID }: { documentID: string }): ReactEl
 
           <ReviewForm
             value={proposal}
-            disabled={!editable || saving}
-            onChange={setProposal}
+            disabled={!editable || busy}
+            onChange={(next) => dispatch({ type: 'edit', proposal: next })}
             warnings={latest.warnings}
           />
           <ReviewContext version={latest} audit={document.audit} exports={document.exports} />
@@ -372,24 +319,24 @@ export function ReviewWorkspace({ documentID }: { documentID: string }): ReactEl
               <button
                 className="button button-primary"
                 type="button"
-                disabled={saving || !dirty}
+                disabled={busy || !dirty}
                 onClick={() => void save()}
               >
-                {saving ? 'Saving correction…' : 'Save correction'}
+                {pending === 'save' ? 'Saving correction…' : 'Save correction'}
               </button>
               <button
                 className="button button-primary"
                 type="button"
-                disabled={saving || dirty}
-                onClick={() => setShowApprove(true)}
+                disabled={busy || dirty}
+                onClick={() => dispatch({ type: 'confirm', target: 'approve' })}
               >
                 Approve version {latest.version_number}
               </button>
               <button
                 className="button button-danger"
                 type="button"
-                disabled={saving}
-                onClick={() => setShowReject(true)}
+                disabled={busy}
+                onClick={() => dispatch({ type: 'confirm', target: 'reject' })}
               >
                 Reject document
               </button>
@@ -401,25 +348,25 @@ export function ReviewWorkspace({ documentID }: { documentID: string }): ReactEl
                 <button
                   className="button button-primary"
                   type="button"
-                  disabled={exportingCSV}
-                  onClick={() => setShowCSVConfirm(true)}
+                  disabled={busy}
+                  onClick={() => dispatch({ type: 'confirm', target: 'csv' })}
                 >
                   Download CSV Export
                 </button>
                 <button
                   className="button button-primary"
                   type="button"
-                  disabled={exportingWebhook}
-                  onClick={() => setShowWebhookConfirm(true)}
+                  disabled={busy}
+                  onClick={() => dispatch({ type: 'confirm', target: 'webhook' })}
                 >
-                  {exportingWebhook ? 'Enqueuing Webhook…' : 'Send Webhook Export'}
+                  {pending === 'webhook' ? 'Enqueuing Webhook…' : 'Send Webhook Export'}
                 </button>
                 {watchedWebhookExportID ? (
                   <button
                     className="button button-quiet"
                     type="button"
-                    disabled={exportingWebhook}
-                    onClick={refreshWebhookStatus}
+                    disabled={busy}
+                    onClick={() => dispatch({ type: 'refresh_webhook' })}
                   >
                     Refresh webhook status
                   </button>
@@ -434,13 +381,13 @@ export function ReviewWorkspace({ documentID }: { documentID: string }): ReactEl
         </section>
       </section>
 
-      {showApprove ? (
+      {confirming === 'approve' ? (
         <ConfirmDialog
           title={`Approve Version ${latest.version_number}?`}
-          onClose={() => setShowApprove(false)}
-          confirmLabel={approving ? 'Approving…' : 'Confirm approval'}
+          onClose={() => dispatch({ type: 'dismiss' })}
+          confirmLabel={pending === 'approve' ? 'Approving…' : 'Confirm approval'}
           onConfirm={() => void approve()}
-          disabled={approving}
+          disabled={pending === 'approve'}
         >
           <p>
             Approving version {latest.version_number} locks this invoice and creates an immutable
@@ -449,13 +396,13 @@ export function ReviewWorkspace({ documentID }: { documentID: string }): ReactEl
         </ConfirmDialog>
       ) : null}
 
-      {showCSVConfirm ? (
+      {confirming === 'csv' ? (
         <ConfirmDialog
           title="Download CSV Export?"
-          onClose={() => setShowCSVConfirm(false)}
-          confirmLabel={exportingCSV ? 'Creating CSV…' : 'Confirm CSV export'}
+          onClose={() => dispatch({ type: 'dismiss' })}
+          confirmLabel={pending === 'csv' ? 'Creating CSV…' : 'Confirm CSV export'}
           onConfirm={() => void handleCSVExport()}
-          disabled={exportingCSV}
+          disabled={pending === 'csv'}
         >
           <p>
             Creates the versioned InvoiceFlow CSV v1 from approved version {approvedVersion}. The
@@ -464,29 +411,29 @@ export function ReviewWorkspace({ documentID }: { documentID: string }): ReactEl
         </ConfirmDialog>
       ) : null}
 
-      {showWebhookConfirm ? (
+      {confirming === 'webhook' ? (
         <ConfirmDialog
           title="Send Webhook Export?"
-          onClose={() => setShowWebhookConfirm(false)}
-          confirmLabel={exportingWebhook ? 'Enqueuing…' : 'Confirm webhook export'}
+          onClose={() => dispatch({ type: 'dismiss' })}
+          confirmLabel={pending === 'webhook' ? 'Enqueuing…' : 'Confirm webhook export'}
           onConfirm={() => {
-            setShowWebhookConfirm(false);
+            dispatch({ type: 'dismiss' });
             void handleWebhookExport();
           }}
-          disabled={exportingWebhook}
+          disabled={pending === 'webhook'}
         >
           <p>Enqueues a durable HMAC-SHA256 webhook job for approved version {approvedVersion}.</p>
           <p>Destination: Server-configured webhook. The full URL and secret are never shown.</p>
         </ConfirmDialog>
       ) : null}
 
-      {showReject ? (
+      {confirming === 'reject' ? (
         <ConfirmDialog
           title="Reject this document?"
-          onClose={() => setShowReject(false)}
-          confirmLabel={rejecting ? 'Rejecting…' : 'Confirm rejection'}
+          onClose={() => dispatch({ type: 'dismiss' })}
+          confirmLabel={pending === 'reject' ? 'Rejecting…' : 'Confirm rejection'}
           onConfirm={() => void reject()}
-          disabled={rejecting}
+          disabled={pending === 'reject'}
           danger
         >
           <p>This is a terminal transition. It does not delete the source or review history.</p>

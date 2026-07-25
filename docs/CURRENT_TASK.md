@@ -1,5 +1,159 @@
 # Current Task
 
+## Stage 9 — distribution, traceability, and documentation accuracy
+
+Every Stage 9 item except the public deployment is implemented. The deployment
+itself needs a hosting account and credentials and publishes an instance to the
+internet, so it remains the repository owner's action, not a code change.
+
+### P1 — request tracing (ADR-017)
+
+`writeAPIError` generated a `request_id` at the moment of writing and nothing
+logged it: the affordance existed and the trace did not. `withRequestContext`
+(`cmd/api/middleware.go`) now assigns the id **at the edge**, publishes it in
+`X-Request-Id`, puts it in the request context, and emits exactly one
+structured access line per request — `method`, `path`, `status`, `duration_ms`,
+`request_id`. `writeAPIError` reads that id instead of minting its own, so the
+value a client quotes is the value in the header and the value in the log; a
+test asserts the two are equal, and another asserts one log record per request.
+
+The path is client controlled, so it is truncated to 200 bytes and reduced to
+printable ASCII with the query string dropped. Request bodies, uploaded
+filenames, storage keys, document text, and secrets never reach the log. When
+the middleware is absent — a handler built directly in a test — `requestID`
+falls back to a fresh id, so an envelope is never issued without one.
+
+### P1 — basic metrics (ADR-017)
+
+`AGENTS.md` lists "Health, readiness, structured logs, and basic metrics" in the
+MVP scope; the first three existed and the fourth did not. `internal/metrics` is
+a small dependency-free registry rendering the Prometheus text format:
+`invoiceflow_process_jobs_total` and `invoiceflow_export_jobs_total` by terminal
+outcome, `invoiceflow_extraction_duration_seconds` (bounds bracketing the 15 s
+PDF and 30 s OCR timeouts), and `invoiceflow_documents` / `invoiceflow_jobs` by
+status, with queue depth as the latter's `ready` series.
+
+Two design points matter more than the instrument list. The counters fire from
+optional `Worker` hooks **only after the durable transition committed**, so a
+counter never claims an outcome the database did not record; to make
+`dead_letter` exact rather than inferred, `FinishRetry` and `FinishExportRetry`
+now return the outcome they committed. And the two gauges are read at scrape
+time from `SELECT status, count(*)` rather than counted in memory, so a
+restarted worker reports the truth immediately instead of counting up from zero.
+A gauge whose query fails renders as a comment and suppresses only itself — one
+database hiccup must not blind every metric — and the driver's message never
+reaches the exposition.
+
+The endpoint belongs to the **worker**, on its own listener `METRICS_ADDR`,
+empty by default so nothing is opened unless asked for. It has no authentication
+and reveals traffic volume, so configuration refuses an address equal to
+`API_ADDR`: that is the one mistake that would silently publish operational
+volume on the ADR-016 public instance.
+
+### P1 — documentation matched to the code
+
+The discrepancies all understated the project. `README.md`'s limitations table
+claimed "No document list/search" when the keyset-paginated list shipped in
+Stage 8, and its status line still said stages 0–7. `docs/CURRENT_TASK.md`
+listed `document list/search` as unimplemented for the same reason. Each now
+names only what is genuinely absent — search, manual retry — and the metrics
+line is gone because metrics now exist.
+
+### P2 — coverage, hygiene, and an end-to-end check
+
+**`internal/processing` unit coverage** rose from 4.1% to 10.6% by extracting
+the decisions that never needed a database — `clampDocumentPageSize`,
+`requireNeedsReview`, `requireExportableVersion`, and the two export
+idempotency-key builders — and testing them directly alongside the cursor
+round-trip, `validUUID`, diagnostic sanitization, and error classification. The
+transactional paths stay with the integration suite, which is where they belong.
+
+**`web/node_modules` left the Go module.** `go test ./...` used to descend into
+`web/node_modules/flatted/golang/pkg/flatted`, a third-party Go package inside
+an npm dependency. `go.mod` now carries `ignore ./web/node_modules`.
+
+**The `act()` warning is gone.** `routes.test.tsx`'s file-input test rendered the
+shell without mocking `fetch` and without awaiting, so the mount requests
+settled after the test body.
+
+**`ReviewWorkspace` became a reducer.** Sixteen `useState` hooks are now one
+state machine in `web/src/components/review/reviewState.ts`. Two facts drove
+eight of those booleans — which irreversible action is being confirmed, and
+which one is in flight — and both are single-valued by construction, so
+representing them as one value each removes states that were unreachable but
+still had to be reasoned about. Eight reducer tests cover the transitions,
+including the ones that are easy to get wrong: a failed action leaves its
+confirmation dialog open, a background refresh failure does not blank out the
+review, and a manual refresh restarts the bounded poll counter without dropping
+the watched export.
+
+**Browser end-to-end tests.** `web/e2e/review-flow.spec.ts` drives upload →
+review → correction → approval → CSV download in Chromium against a running
+demo, plus a second test that a document is reachable from the list rather than
+only from the URL the upload returned. It uploads a generated fictional invoice
+rather than a committed fixture, for two reasons: uploads are deduplicated by
+SHA-256, so a fixture would `409` on a second run, and an unseen document
+exercises the ADR-015 heuristic reader — the path a real visitor takes. The
+suite is deliberately outside `make check` because it needs a running instance;
+`make test-e2e` documents how to point it at an isolated one.
+
+### The deployment: prepared, not performed
+
+No public instance is operated and no URL is claimed anywhere in this
+repository. What changed is that everything short of the act itself is now
+committed rather than described.
+
+The platform choice is forced by one constraint: there is no S3 adapter, so
+`STORAGE_DIR` is a filesystem the API and the worker must both open, and most
+PaaS offerings attach a disk to exactly one service. Satisfying them would need
+a supervisor starting both binaries in one container — new code, and a new
+failure mode where nothing restarts a dead worker. One host running the existing
+Compose files needs none of that, and the base file was already written for it
+(shared `document_data`, API published to loopback only).
+
+- `docker-compose.public.yml` — turns on `PUBLIC_DEMO`, sets the upload
+  backstop, drops the Postgres volume and every published port except the API's,
+  pins `EXTRACTOR=fake` and blanks the OpenAI variables (the base file reads them
+  from the host environment, so an inherited key must not opt the instance in),
+  and refuses to start without an explicit `WEBHOOK_SECRET` — the committed
+  `local-demo-webhook-secret` is public by definition.
+- `deploy/nginx/invoiceflow.conf` — TLS and the **real** per-visitor rate limit.
+  This is the part that is easy to get wrong: `X-Forwarded-For` is deliberately
+  not trusted, so behind a proxy every request reaches the process with one peer
+  address and `UPLOAD_RATE_PER_MINUTE` bounds the instance rather than the
+  visitor. A separate, much stricter zone covers `POST /api/v1/documents`.
+- `deploy/reset.sh` plus a systemd service and timer — nightly wipe, which is
+  what makes a shared unauthenticated workspace acceptable.
+
+Two documentation defects were fixed while doing this. `docs/DEPLOYMENT.md`
+called for "container-local storage for `STORAGE_DIR` — no mounted volume",
+which cannot work when two containers must share that directory; ephemerality
+comes from the scheduled reset instead. And its instruction to leave
+`WEBHOOK_URL` unset is reversed for the internal receiver, with the reasoning
+recorded as an amendment to ADR-016: that receiver is not a real external
+destination but the exact fixed internal one of ADR-012, and dropping it would
+hide the signed-webhook export, retries, and dead-lettering from every visitor.
+The real hazard was the committed secret, which the override now refuses to use.
+
+The checklist gained steps for verifying `X-Request-Id`, confirming the metrics
+address is unreachable from outside, and — the one failure that would turn a
+demo into a place strangers store files — confirming the reset actually erases.
+
+**Not validated:** the nginx configuration has not been checked against a
+running nginx, and the Compose override was verified only with
+`docker compose config` (the Docker daemon was unavailable). The step-by-step
+guide says so and puts `nginx -t` before enabling the site.
+
+### Validation
+
+`gofmt`, `go vet ./...` (including `-tags=integration`), `go test ./...`, and the
+frontend gate (`format:check`, `lint`, `typecheck`, 42 tests, `vite build`) all
+pass. **Not re-run in this pass:** the PostgreSQL integration suite, the Compose
+smoke, and the new browser end-to-end suite — the Docker daemon was unavailable
+on this machine. The integration test that calls `FinishRetry` was updated for
+its new return value and compiles under `go vet -tags=integration`, but it has
+not been executed against a database.
+
 ## Stage 8 — complete except the deploy itself
 
 Every P0, P1, and P2 item of the Stage 8 demo-experience pass is implemented.
@@ -155,7 +309,7 @@ Stage 5 — explicit approval and export (CSV and signed webhook) is `PASS`. The
 
 ## Deliberately not implemented
 
-There is no invoice payment, bank connectivity, user-configurable webhook destination, production authentication, document list/search, manual retry endpoint, or raster OCR for scanned PDFs.
+There is no invoice payment, bank connectivity, user-configurable webhook destination, production authentication, document search, manual retry endpoint, or raster OCR for scanned PDFs. A bounded, keyset-paginated document *list* was added in Stage 8 (`GET /api/v1/documents`); only search is absent.
 
 ## Optional live extractor (ADR-014)
 

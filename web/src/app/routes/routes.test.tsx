@@ -83,8 +83,13 @@ describe('routes', () => {
     expect(screen.getByRole('main')).toHaveFocus();
   });
 
-  it('provides a keyboard-accessible native file input and an idle state', () => {
+  it('provides a keyboard-accessible native file input and an idle state', async () => {
+    /* The shell loads the config and the document list on mount. Without a mock
+       and an await, those settle after the test body and React reports a state
+       update outside act(...). */
+    globalThis.fetch = mockJSON({ documents: [] });
     render(<AppShell />);
+    expect(await screen.findByText(/no documents yet/i)).toBeVisible();
     const input = screen.getByLabelText('Invoice file');
     expect(input).toHaveAttribute('type', 'file');
     expect(input).toHaveAttribute('accept', expect.stringContaining('.pdf'));

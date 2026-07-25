@@ -7,6 +7,8 @@
 | `GET /healthz` | Liveness probe; it does not contact PostgreSQL. | `200 {"status":"ok"}` |
 | `GET /readyz` | Readiness probe; performs a bounded PostgreSQL ping. | `200 {"status":"ready"}` or `503 {"status":"not_ready"}` |
 
+Every API response carries `X-Request-Id`, an opaque id assigned at the edge before any handler runs (ADR-017). The same value appears in the `request_id` field of every error envelope and in exactly one structured access log line per request (`method`, sanitized `path`, `status`, `duration_ms`, `request_id`). The header is informational: no request value influences it, and quoting it back grants nothing.
+
 The API binds to `127.0.0.1:8080` by default. Compose publishes it only to loopback; set `API_HOST_PORT` or `POSTGRES_HOST_PORT` when either local port is already in use.
 
 ## Implemented Stage 6 browser delivery
@@ -223,6 +225,26 @@ All approval and export routes return `Cache-Control: no-store` and `X-Content-T
 | `409` | `invalid_document_transition`, `stale_review_version` | Document not in `needs_review` for approval, or not in `approved`/`exported` for export. |
 | `500` | `source_unavailable`, `internal_error` | A safe request could not complete. |
 
+## Implemented Stage 9 operational metrics
+
+The **worker** process optionally serves a Prometheus text exposition (ADR-017). It is a separate listener, configured by `METRICS_ADDR`, and is **empty by default**, so no listener is opened unless an operator asks for one. Configuration refuses an address equal to `API_ADDR`.
+
+| Method and path | Behavior | Response |
+| --- | --- | --- |
+| `GET /metrics` | Renders the worker instrument set. Any other path or method on this listener is not served. | `200 text/plain; version=0.0.4; charset=utf-8` with `Cache-Control: no-store` and `X-Content-Type-Options: nosniff` |
+
+Instruments:
+
+| Name | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `invoiceflow_process_jobs_total` | counter | `outcome` = `success` / `retry` / `dead_letter` | Finished document processing jobs, counted only after the durable transition committed. |
+| `invoiceflow_export_jobs_total` | counter | `outcome` (same values) | Finished webhook export jobs. |
+| `invoiceflow_extraction_duration_seconds` | histogram | — | One extraction attempt, successful or not. Bounds bracket the 15 s PDF and 30 s OCR timeouts. |
+| `invoiceflow_documents` | gauge | `status` | Documents per document state, read at scrape time. |
+| `invoiceflow_jobs` | gauge | `status` | Durable jobs per job status; queue depth is the `ready` series. |
+
+The exposition is aggregate: it contains no document id, hash, storage key, supplier, amount, or provider detail. It has no authentication of its own and reveals traffic volume, so a deployment must bind it to an address that is not publicly reachable.
+
 ## Not implemented
 
-No document list, job retry endpoint, payment, multi-tenant billing, user authentication/authorization, pagination beyond fixed detail bounds, or metrics endpoint exists.
+No document search, job retry endpoint, payment, multi-tenant billing, user authentication/authorization, or pagination beyond the bounded document list and fixed detail bounds exists. The metrics endpoint carries no per-route latency histogram, tracing, or alerting.
