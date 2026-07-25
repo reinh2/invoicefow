@@ -1,0 +1,69 @@
+# Override for a public demo instance (ADR-016). Use it together with the base
+# file, never on its own:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.public.yml up -d --wait
+#
+# It changes three things and nothing else: it turns on the public-demo notice
+# and the upload limit, it removes every persistent volume and every published
+# port except the API's, and it requires an explicit WEBHOOK_SECRET instead of
+# the committed local-demo one.
+#
+# Read docs/DEPLOYMENT.md before using this. A public instance has no
+# authentication: every visitor shares one workspace.
+#
+# Requires Docker Compose v2.24+ for the `!reset` tag.
+
+services:
+  postgres:
+    # The demo database is disposable by construction: no volume, so the daily
+    # reset does not depend on remembering `down -v`.
+    volumes: !reset []
+    # Nothing outside the compose network may reach PostgreSQL, not even
+    # loopback on the host.
+    ports: !reset []
+
+  api:
+    environment:
+      # Tells the visitor plainly that the workspace is shared, unauthenticated,
+      # and periodically erased. It grants nothing (ADR-016).
+      PUBLIC_DEMO: "true"
+      # A backstop, not the real defence. Behind a reverse proxy every request
+      # shares one peer address, so this bounds the instance as a whole rather
+      # than each visitor; the per-visitor limit belongs on the proxy. See
+      # deploy/nginx/invoiceflow.conf.
+      UPLOAD_RATE_PER_MINUTE: "30"
+      # The base file's secret is committed and therefore public. Refuse to
+      # start without a real one rather than silently signing with it.
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:?set WEBHOOK_SECRET in .env (openssl rand -hex 32)}
+    # Published to loopback only; the reverse proxy terminates TLS in front.
+    ports:
+      - "127.0.0.1:${API_HOST_PORT:-8080}:8080"
+
+  worker:
+    environment:
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:?set WEBHOOK_SECRET in .env (openssl rand -hex 32)}
+      # The offline extractor stays the default: no key is billed to anonymous
+      # traffic. The base file reads these from the host environment, so all
+      # three are pinned here — an inherited OPENAI_API_KEY must neither opt the
+      # instance in nor be handed to a container that has no use for it.
+      EXTRACTOR: fake
+      OPENAI_API_KEY: ""
+      OPENAI_MODEL: ""
+      OPENAI_BASE_URL: ""
+      # Metrics (ADR-017) bind inside the compose network only. The port is
+      # deliberately not published, so the exposition is reachable from the
+      # other containers and from `docker compose exec`, and from nowhere else.
+      METRICS_ADDR: 0.0.0.0:9090
+
+  receiver:
+    environment:
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:?set WEBHOOK_SECRET in .env (openssl rand -hex 32)}
+    # The receiver is an internal fixed destination for the webhook demo
+    # (ADR-012). It must not be reachable from outside the compose network.
+    ports: !reset []
+
+volumes:
+  # document_data stays a named volume because the API and the worker are
+  # separate containers that must share STORAGE_DIR. Its contents are wiped by
+  # the scheduled reset (deploy/reset.sh), not by being container-local.
+  postgres_data: !reset null

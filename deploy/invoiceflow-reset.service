@@ -1,0 +1,11 @@
+[Unit]
+Description=Wipe and restart the public InvoiceFlow demo
+Documentation=file:///srv/invoiceflow/docs/DEPLOYMENT.md
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+Environment=INVOICEFLOW_DIR=/srv/invoiceflow
+WorkingDirectory=/srv/invoiceflow
+ExecStart=/bin/sh /srv/invoiceflow/deploy/reset.sh

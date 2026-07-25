@@ -1,0 +1,13 @@
+[Unit]
+Description=Daily reset of the public InvoiceFlow demo
+
+[Timer]
+# Nightly, at a quiet hour. Persistent=true so a reset missed while the machine
+# was off runs at the next boot instead of being skipped silently — the demo
+# must not keep whatever strangers uploaded just because it was rebooted.
+OnCalendar=*-*-* 04:00:00
+Persistent=true
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target
