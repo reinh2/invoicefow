@@ -512,8 +512,8 @@ none of those is claimed.
 
 ## ADR-018 — Scroll-scrubbed art and the generated-media boundary
 
-**Status:** Accepted. Applied to the provenance story; the hero application was
-built and **reverted** (see the revision notes)
+**Status:** Accepted. Applied to the provenance story and the retained
+user-supplied pipeline clip; prior hero variants are documented in the revisions.
 
 **Context:** The hero opened with a static CSS mock of the review screen — a
 decorative echo of the product, drawn in DOM. It was honest but inert, and it
@@ -634,3 +634,40 @@ background is a lit mid grey at the upper-left corner rather than the page ink, 
 any letterboxed placement shows a hard band unless the frame is generated with an
 even background; and a delivered master carries roughly one keyframe per file, so
 the all-intra re-encode above is not optional.
+
+**Revision 3 — supplied hero and pipeline clips.** The repository owner later
+provided `hero.mp4` and `Pipeline.mp4` and requested their installation in the
+landing page. They are moved to `web/public/media/hero.mp4` and
+`web/public/media/pipeline.mp4`, then re-encoded from their 1920×1080 masters to
+1280×720, 12 fps, no-audio, all-intra H.264 MP4s. The resulting 49-frame hero
+and 61-frame pipeline clips meet the seekability constraint recorded above. The
+hero is a contained scroll-scrubbed panel beside the opening copy; the pipeline
+clip is a contained sticky panel beside the six textual server stages. This
+avoids the full-bleed crop rejected in Revision 1 while making both clips
+reader-driven.
+
+No separate stills accompanied these assets. For this narrow case `ScrubVideo`
+renders a muted, paused video and seeks it to its final frame when reduced motion
+is requested; it does not autoplay or construct the scroll observer. Existing
+callers with a supplied poster keep the image-still behavior. The media remains
+decorative, and the real application capture remains the only factual product
+media required by ADR-005.
+
+**Revision 4 — compositional role and pacing.** Visual review showed that the
+hero clip's open right side read as unused space and that the pipeline clip moved
+through a two-column, three-row grid too quickly to establish a relationship with
+six stages. The hero now places a small decorative three-part flow legend in the
+open area, so the art frames the product promise instead of acting as an isolated
+panel. The pipeline's six cards form one vertically spaced column at desktop
+width, and its scroll smoothing is reduced from `0.14` to `0.055`. Together the
+clip's six stops get one readable scroll beat each; small screens and
+reduced-motion paths retain the established static layout.
+
+**Revision 5 — remove hero motion and use card-centre synchronization.** The
+owner found the hero animation distracting, so the original static review preview
+returns and the unused hero asset is removed from the shipped bundle. The pipeline
+scene keeps its clip, but its playhead no longer depends on the scene wrapper's
+overall geometry: it is explicitly mapped from the first card's viewport-centre
+crossing to the sixth's. This is a semantic relationship between the six visible
+stages and the clip's six stops, rather than a loose coincidence between their
+respective heights.

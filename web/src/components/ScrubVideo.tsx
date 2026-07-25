@@ -17,13 +17,22 @@ import { useReducedMotion } from '../motion/useReducedMotion';
    advances, then releases. */
 export type ScrubVideoProps = {
   src: string;
-  poster: string;
+  /* A final-frame still for the reduced-motion path. Some supplied clips do
+     not include a separate still; in that case the component seeks a paused
+     video to its final frame instead. */
+  poster?: string;
   /* The clip's own aspect ratio, as a CSS `aspect-ratio` value. It reserves the
      right box before metadata arrives, so the page does not reflow around the
      clip, and it keeps the media from being letterboxed against a background it
      cannot match. */
   aspect?: string;
   scrollLength?: string;
+  /* Smaller values let a long visual scene settle rather than chase rapid
+     wheel or trackpad movement. */
+  smoothing?: number;
+  /* An owning scene can map the playhead to meaningful scroll landmarks (for
+     example, the centres of explanatory cards) instead of its raw height. */
+  getProgress?: () => number;
   className?: string;
   children?: ReactNode;
 } & ({ decorative: true } | { decorative?: false; label: string; posterAlt: string });
@@ -52,7 +61,16 @@ function scrollProgress(wrapper: HTMLDivElement): number {
 }
 
 export function ScrubVideo(props: ScrubVideoProps): ReactElement {
-  const { src, poster, aspect = '16 / 9', scrollLength = '240vh', className, children } = props;
+  const {
+    src,
+    poster,
+    aspect = '16 / 9',
+    scrollLength = '240vh',
+    smoothing = 0.14,
+    getProgress,
+    className,
+    children,
+  } = props;
   const reducedMotion = useReducedMotion();
   const wrapper = useRef<HTMLDivElement | null>(null);
   const video = useRef<HTMLVideoElement | null>(null);
@@ -74,11 +92,12 @@ export function ScrubVideo(props: ScrubVideoProps): ReactElement {
       // no position to seek to.
       if (!Number.isFinite(duration) || duration <= 0) return;
 
-      const target = scrollProgress(element) * duration;
+      const progress = getProgress === undefined ? scrollProgress(element) : getProgress();
+      const target = clamp(progress) * duration;
       // Ease toward the target so a trackpad flick reads as motion rather than
       // as a jump between two distant frames. The first frame snaps, because
       // easing up from zero would animate content the reader never scrolled past.
-      position = started ? position + (target - position) * 0.14 : target;
+      position = started ? position + (target - position) * smoothing : target;
       started = true;
       // Seeks are the expensive part, so skip sub-frame corrections.
       if (Math.abs(media.currentTime - position) > 0.01) media.currentTime = position;
@@ -120,15 +139,37 @@ export function ScrubVideo(props: ScrubVideoProps): ReactElement {
       observer?.disconnect();
       if (frame !== 0) window.cancelAnimationFrame(frame);
     };
-  }, [reducedMotion]);
+  }, [getProgress, reducedMotion, smoothing]);
+
+  const pauseOnFinalFrame = (media: HTMLVideoElement): void => {
+    const duration = media.duration;
+    if (Number.isFinite(duration) && duration > 0) media.currentTime = duration;
+    media.pause();
+  };
 
   const media = reducedMotion ? (
-    <img
-      className="scrub-media"
-      src={poster}
-      alt={props.decorative === true ? '' : props.posterAlt}
-      aria-hidden={props.decorative === true ? true : undefined}
-    />
+    poster === undefined ? (
+      <video
+        ref={video}
+        className="scrub-media"
+        src={src}
+        muted
+        playsInline
+        preload="metadata"
+        disablePictureInPicture
+        aria-label={props.decorative === true ? undefined : props.label}
+        aria-hidden={props.decorative === true ? true : undefined}
+        tabIndex={props.decorative === true ? -1 : undefined}
+        onLoadedMetadata={(event) => pauseOnFinalFrame(event.currentTarget)}
+      />
+    ) : (
+      <img
+        className="scrub-media"
+        src={poster}
+        alt={props.decorative === true ? '' : props.posterAlt}
+        aria-hidden={props.decorative === true ? true : undefined}
+      />
+    )
   ) : (
     <video
       ref={video}

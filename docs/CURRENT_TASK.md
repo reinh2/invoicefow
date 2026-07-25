@@ -1,5 +1,66 @@
 # Current Task
 
+## Remove hero motion and synchronize pipeline stages
+
+The hero clip was removed from both the page and the delivered media bundle at
+the repository owner's request. The original static review-preview returns
+because it supports the opening message without adding scroll height or
+competing for attention.
+
+The pipeline clip no longer maps progress to the height of its wrapper. Instead,
+`PipelineScene` maps 0–1 from the vertical centre of the first stage card to the
+centre of the sixth card, and passes that calculation to `ScrubVideo`. The video
+therefore advances only as the reader reaches the next explanatory stage. The
+single-column desktop layout remains deliberately spacious, and the 0.1 smoothing
+factor keeps small wheel and trackpad motions fluid without visibly lagging behind
+the active card.
+
+## Refreshed factual product capture
+
+`web/public/media/demo.webm` and its `demo-landing-poster.png` were regenerated
+from an isolated, freshly seeded Compose demo after the hero removal and the
+pipeline synchronization change. The recording now shows the static opening,
+the current scroll scenes, and the vertically paced six-stage pipeline rather
+than an earlier landing-page revision. `demo-review.png` was regenerated from
+the same fixture session so reduced-motion and no-video visitors receive a
+matching real-application fallback.
+
+## Earlier scroll-scene finding — hero purpose and pipeline pacing
+
+Visual review found that the initial hero left the supplied art's intentional
+right-side negative space unexplained, while the pipeline retained its original
+two-column card grid. The latter made the whole 61-frame clip traverse only
+three rows of copy, so the visual moved too quickly to read as six related
+stages.
+
+That intermediate hero legend was subsequently removed at the repository
+owner's request. The final pipeline treatment keeps the single, generously
+spaced desktop sequence, but its owner-provided stage-centre mapping (described
+above) replaces the earlier wrapper-height mapping and tuning experiment. The
+existing narrow viewport and reduced-motion behavior remain unchanged.
+
+## Supplied hero and pipeline clips — scroll-scrubbed installation
+
+The supplied clips were initially installed into the browser bundle. The hero
+clip was later removed; the retained `Pipeline.mp4` master is available as
+`web/public/media/pipeline.mp4`, re-encoded to 1280×720, 12 fps, no-audio,
+all-intra MP4 (61 frames). This is essential for an arbitrary scroll seek not to
+decode from the start of the clip. It remains ordinary static media, so the
+hardened bundle handler retains byte-range support for seeking.
+
+The retained clip uses the existing `ScrubVideo` scroll-playhead mechanism and
+sticks opposite the six server stages. At widths below 901px the sticky treatment
+is removed by the shared component and the clip resolves to its final state
+instead of running an arbitrary autoplay animation. It has no separate poster
+image: when reduced motion is requested, `ScrubVideo` seeks a paused video
+element to its final frame; existing callers with posters continue to render a
+still image.
+
+The existing `ScrubVideo` test suite now also covers that no-poster,
+reduced-motion path, and the landing-page tests assert the retained pipeline
+source while confirming the hero source is absent. The source changes passed the
+targeted Vitest suite and desktop browser review.
+
 ## Provenance story — scroll-scrubbed scene (ADR-018)
 
 The provenance walkthrough is now a two-column scene: a scroll-scrubbed clip that

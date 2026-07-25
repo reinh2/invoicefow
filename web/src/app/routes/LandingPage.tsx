@@ -1,8 +1,9 @@
 import { PageFrame } from '../../components/PageFrame';
 import { ProvenanceStory } from '../../components/ProvenanceStory';
 import { DemoMedia } from '../../components/DemoMedia';
+import { ScrubVideo } from '../../components/ScrubVideo';
 import { StatusTag } from '../../components/StatusTag';
-import type { ReactElement } from 'react';
+import { useCallback, useRef, type ReactElement } from 'react';
 
 const pipeline = [
   {
@@ -68,6 +69,60 @@ const limits = [
   'Webhook delivery is at-least-once. The receiver must deduplicate by the idempotency key.',
 ];
 
+/* The clip does not progress across an arbitrary wrapper height. Its playhead
+   runs from the centre of the first stage to the centre of the last, so the
+   reader reaches each of the six visual stops while reading that stage. */
+function PipelineScene(): ReactElement {
+  const stages = useRef<(HTMLLIElement | null)[]>([]);
+  const registerStage = useCallback(
+    (index: number) =>
+      (element: HTMLLIElement | null): void => {
+        stages.current[index] = element;
+      },
+    [],
+  );
+  const stageProgress = useCallback((): number => {
+    const first = stages.current[0];
+    const last = stages.current[stages.current.length - 1];
+    if (first === null || first === undefined || last === null || last === undefined) return 0;
+
+    const anchor = window.innerHeight / 2;
+    const firstRect = first.getBoundingClientRect();
+    const lastRect = last.getBoundingClientRect();
+    const start = firstRect.top + firstRect.height / 2;
+    const end = lastRect.top + lastRect.height / 2;
+    if (end <= start) return 0;
+    return Math.min(1, Math.max(0, (anchor - start) / (end - start)));
+  }, []);
+
+  return (
+    <div className="pipeline-scene">
+      <ScrubVideo
+        className="pipeline-scrub"
+        src="/media/pipeline.mp4"
+        aspect="16 / 9"
+        scrollLength="100%"
+        smoothing={0.1}
+        getProgress={stageProgress}
+        decorative
+      />
+      <ol className="pipeline-list">
+        {pipeline.map((stage, index) => (
+          <li key={stage.title} ref={registerStage(index)}>
+            <p className="pipeline-index" aria-hidden="true">
+              {String(index + 1).padStart(2, '0')}
+            </p>
+            <div>
+              <h3>{stage.title}</h3>
+              <p>{stage.body}</p>
+            </div>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
 export function LandingPage(): ReactElement {
   return (
     <PageFrame>
@@ -125,19 +180,7 @@ export function LandingPage(): ReactElement {
               approval, or an export destination.
             </p>
           </div>
-          <ol className="pipeline-list">
-            {pipeline.map((stage, index) => (
-              <li key={stage.title}>
-                <p className="pipeline-index" aria-hidden="true">
-                  {String(index + 1).padStart(2, '0')}
-                </p>
-                <div>
-                  <h3>{stage.title}</h3>
-                  <p>{stage.body}</p>
-                </div>
-              </li>
-            ))}
-          </ol>
+          <PipelineScene />
         </section>
 
         <section id="checks" className="checks" aria-labelledby="checks-title">

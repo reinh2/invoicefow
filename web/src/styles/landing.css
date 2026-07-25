@@ -91,6 +91,11 @@
   font-weight: 700;
 }
 
+.pipeline-scrub .scrub-media {
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+}
+
 /* Shared section rhythm */
 
 .story,
@@ -142,6 +147,26 @@
 .section-intro h2,
 .story-intro h2 {
   margin-bottom: var(--space-4);
+}
+
+/* The supplied pipeline clip remains in view while the six stages explain its
+   meaning. On small screens it becomes a normal media block above the list. */
+
+.pipeline-scene {
+  display: grid;
+  gap: var(--space-6);
+}
+
+@media (min-width: 901px) {
+  .pipeline-scene {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+    gap: var(--space-8);
+    align-items: start;
+  }
+
+  .pipeline-scrub[data-motion='scroll'] .scrub-viewport {
+    align-content: center;
+  }
 }
 
 /* Provenance story.
@@ -388,11 +413,26 @@
 
 .pipeline-list {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: var(--space-5);
   padding: 0;
   margin: 0;
   list-style: none;
+}
+
+/* One stage per scroll beat: each card gets its own generous visual interval,
+   while the playhead maps to the centres of these cards in PipelineScene. */
+
+@media (min-width: 901px) {
+  .pipeline-scene .pipeline-list {
+    grid-template-columns: 1fr;
+    gap: clamp(var(--space-6), 5vh, var(--space-8));
+  }
+
+  .pipeline-scene .pipeline-list li {
+    min-block-size: clamp(18rem, 40vh, 26rem);
+    align-content: start;
+  }
 }
 
 .pipeline-list li {
@@ -520,6 +560,7 @@
   .hero h1 {
     max-width: none;
   }
+
 }
 
 @media (max-width: 720px) {

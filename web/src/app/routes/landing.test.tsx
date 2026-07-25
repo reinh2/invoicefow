@@ -158,6 +158,16 @@ describe('landing page', () => {
     expect(fallback).toHaveAttribute('src', '/media/demo-review.png');
   });
 
+  it('uses the supplied pipeline clip as a scroll-driven decorative scene', () => {
+    preferReducedMotion(false);
+    const { container } = render(<LandingPage />);
+    expect(container.querySelector('video[src="/media/hero.mp4"]')).toBeNull();
+    const video = container.querySelector('video[src="/media/pipeline.mp4"]');
+    expect(video).not.toBeNull();
+    expect(video).not.toHaveAttribute('autoplay');
+    expect(video).not.toHaveAttribute('controls');
+  });
+
   it('shows the static review still instead of the video when motion is reduced', () => {
     preferReducedMotion(true);
     render(<LandingPage />);

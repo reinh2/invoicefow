@@ -80,7 +80,7 @@ function stubGeometry(wrapperHeight: number, viewportHeight: number, scrolled: n
   );
 }
 
-function pump(times: number): HTMLVideoElement {
+function pump(times: number, getProgress?: () => number): HTMLVideoElement {
   const frames: FrameRequestCallback[] = [];
   vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
     frames.push(callback);
@@ -89,7 +89,12 @@ function pump(times: number): HTMLVideoElement {
   vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => undefined);
   const observer = stubIntersectionObserver();
   const { container } = render(
-    <ScrubVideo src="/media/clip.mp4" poster="/media/clip.jpg" decorative />,
+    <ScrubVideo
+      src="/media/clip.mp4"
+      poster="/media/clip.jpg"
+      getProgress={getProgress}
+      decorative
+    />,
   );
   observer.fire(true);
   for (let index = 0; index < times; index += 1) {
@@ -142,6 +147,18 @@ describe('ScrubVideo', () => {
     expect(still).toHaveAttribute('src', '/media/clip.jpg');
   });
 
+  it('uses a paused final video frame when a supplied clip has no separate poster', () => {
+    preferReducedMotion(true);
+    stubMedia(5);
+    const { container } = render(<ScrubVideo src="/media/clip.mp4" decorative />);
+    const still = container.querySelector('video');
+    if (still === null) throw new Error('a supplied clip without a poster needs a static video');
+    act(() => still.dispatchEvent(new Event('loadedmetadata')));
+    expect(still).toHaveAttribute('src', '/media/clip.mp4');
+    expect(still).not.toHaveAttribute('autoplay');
+    expect(still.currentTime).toBe(5);
+  });
+
   it('hides decorative media from assistive technology entirely', () => {
     preferReducedMotion(true);
     render(<ScrubVideo src="/media/clip.mp4" poster="/media/clip.jpg" decorative />);
@@ -165,6 +182,14 @@ describe('ScrubVideo', () => {
     const video = pump(3);
     // The first frame snaps to the target rather than easing up from zero.
     expect(video.currentTime).toBeCloseTo(2.5, 5);
+  });
+
+  it('accepts a scene-owned progress mapping for semantic scroll landmarks', () => {
+    preferReducedMotion(false);
+    stubMedia(5);
+    stubGeometry(1200, 400, 0);
+    const video = pump(1, () => 0.6);
+    expect(video.currentTime).toBeCloseTo(3, 5);
   });
 
   it('clamps the playhead inside the clip past both ends of the scroll range', () => {
