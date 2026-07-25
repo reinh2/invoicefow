@@ -13,3 +13,12 @@ const (
 	JobSucceeded  JobStatus = "succeeded"
 	JobDeadLetter JobStatus = "dead_letter"
 )
+
+// Terminal outcomes a finished durable job reports to an observer. These are
+// the only values a Worker hook emits, which is what keeps the metric label
+// they feed bounded by code rather than by data.
+const (
+	OutcomeSuccess    = "success"
+	OutcomeRetry      = "retry"
+	OutcomeDeadLetter = "dead_letter"
+)

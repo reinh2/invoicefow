@@ -72,7 +72,7 @@ func newHandlerWithDependencies(deps apiDependencies) http.Handler {
 	})
 	mux.HandleFunc("POST /api/v1/documents", func(w http.ResponseWriter, r *http.Request) { uploadDocument(w, r, deps) })
 	mux.HandleFunc("GET /api/v1/documents", func(w http.ResponseWriter, r *http.Request) { listDocuments(w, r, deps) })
-	mux.HandleFunc("GET /api/v1/config", func(w http.ResponseWriter, r *http.Request) { getClientConfig(w, deps) })
+	mux.HandleFunc("GET /api/v1/config", func(w http.ResponseWriter, r *http.Request) { getClientConfig(w, r, deps) })
 	mux.HandleFunc("GET /api/v1/documents/{id}", func(w http.ResponseWriter, r *http.Request) { getDocumentReview(w, r, deps) })
 	mux.HandleFunc("GET /api/v1/documents/{id}/source", func(w http.ResponseWriter, r *http.Request) { getDocumentSource(w, r, deps) })
 	mux.HandleFunc("POST /api/v1/documents/{id}/human-reviews", func(w http.ResponseWriter, r *http.Request) { saveHumanReview(w, r, deps) })
@@ -114,7 +114,7 @@ func serveWebBundle(bundle *webui.Bundle) http.Handler {
 	assets := bundle.Handler()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if reservedRoute(r.URL.Path) {
-			writeAPIError(w, http.StatusNotFound, "route_not_found", "route could not be found")
+			writeAPIError(w, r, http.StatusNotFound, "route_not_found", "route could not be found")
 			return
 		}
 		// bundle.Handler applies its own GET/HEAD method gate (a non-GET request
@@ -129,7 +129,7 @@ var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-
 func documentID(w http.ResponseWriter, r *http.Request) (string, bool) {
 	id := r.PathValue("id")
 	if !uuidPattern.MatchString(id) {
-		writeAPIError(w, http.StatusNotFound, "document_not_found", "document could not be found")
+		writeAPIError(w, r, http.StatusNotFound, "document_not_found", "document could not be found")
 		return "", false
 	}
 	return id, true
@@ -140,14 +140,14 @@ func documentID(w http.ResponseWriter, r *http.Request) (string, bool) {
 // can neither request an unbounded scan nor construct a cursor of its own.
 func listDocuments(w http.ResponseWriter, r *http.Request, deps apiDependencies) {
 	if deps.review == nil {
-		writeAPIError(w, 500, "internal_error", "request could not be completed")
+		writeAPIError(w, r, 500, "internal_error", "request could not be completed")
 		return
 	}
 	pageSize := 0
 	if raw := r.URL.Query().Get("limit"); raw != "" {
 		parsed, err := strconv.Atoi(raw)
 		if err != nil || parsed < 1 {
-			writeAPIError(w, http.StatusBadRequest, "invalid_pagination", "limit must be a positive integer")
+			writeAPIError(w, r, http.StatusBadRequest, "invalid_pagination", "limit must be a positive integer")
 			return
 		}
 		pageSize = parsed
@@ -155,10 +155,10 @@ func listDocuments(w http.ResponseWriter, r *http.Request, deps apiDependencies)
 	page, err := deps.review.ListDocuments(r.Context(), pageSize, r.URL.Query().Get("cursor"))
 	if err != nil {
 		if errors.Is(err, processing.ErrInvalidCursor) {
-			writeAPIError(w, http.StatusBadRequest, "invalid_pagination", "cursor is not valid")
+			writeAPIError(w, r, http.StatusBadRequest, "invalid_pagination", "cursor is not valid")
 			return
 		}
-		writeAPIError(w, 500, "internal_error", "request could not be completed")
+		writeAPIError(w, r, 500, "internal_error", "request could not be completed")
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
@@ -168,7 +168,7 @@ func listDocuments(w http.ResponseWriter, r *http.Request, deps apiDependencies)
 
 func getDocumentReview(w http.ResponseWriter, r *http.Request, deps apiDependencies) {
 	if deps.review == nil {
-		writeAPIError(w, 500, "internal_error", "request could not be completed")
+		writeAPIError(w, r, 500, "internal_error", "request could not be completed")
 		return
 	}
 	id, ok := documentID(w, r)
@@ -177,7 +177,7 @@ func getDocumentReview(w http.ResponseWriter, r *http.Request, deps apiDependenc
 	}
 	document, err := deps.review.GetReviewDocument(r.Context(), id)
 	if err != nil {
-		writeReviewError(w, err)
+		writeReviewError(w, r, err)
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
@@ -187,7 +187,7 @@ func getDocumentReview(w http.ResponseWriter, r *http.Request, deps apiDependenc
 
 func getDocumentSource(w http.ResponseWriter, r *http.Request, deps apiDependencies) {
 	if deps.review == nil || deps.storage == nil {
-		writeAPIError(w, 500, "internal_error", "request could not be completed")
+		writeAPIError(w, r, 500, "internal_error", "request could not be completed")
 		return
 	}
 	id, ok := documentID(w, r)
@@ -196,12 +196,12 @@ func getDocumentSource(w http.ResponseWriter, r *http.Request, deps apiDependenc
 	}
 	source, err := deps.review.LoadReviewSource(r.Context(), id)
 	if err != nil {
-		writeReviewError(w, err)
+		writeReviewError(w, r, err)
 		return
 	}
 	stream, err := deps.storage.Open(r.Context(), source.ObjectKey)
 	if err != nil {
-		writeAPIError(w, 500, "source_unavailable", "original document could not be loaded")
+		writeAPIError(w, r, 500, "source_unavailable", "original document could not be loaded")
 		return
 	}
 	defer stream.Close()
@@ -220,7 +220,7 @@ type saveHumanReviewRequest struct {
 
 func saveHumanReview(w http.ResponseWriter, r *http.Request, deps apiDependencies) {
 	if deps.review == nil {
-		writeAPIError(w, 500, "internal_error", "request could not be completed")
+		writeAPIError(w, r, 500, "internal_error", "request could not be completed")
 		return
 	}
 	id, ok := documentID(w, r)
@@ -229,17 +229,17 @@ func saveHumanReview(w http.ResponseWriter, r *http.Request, deps apiDependencie
 	}
 	var request saveHumanReviewRequest
 	if err := decodeStrictJSON(w, r, &request); err != nil || request.BaseVersion < 1 {
-		writeAPIError(w, http.StatusBadRequest, "invalid_review", "review changes could not be accepted")
+		writeAPIError(w, r, http.StatusBadRequest, "invalid_review", "review changes could not be accepted")
 		return
 	}
 	proposal, err := processing.DecodeHumanReviewInput(request.Proposal)
 	if err != nil {
-		writeAPIError(w, http.StatusBadRequest, "invalid_review", "review changes could not be accepted")
+		writeAPIError(w, r, http.StatusBadRequest, "invalid_review", "review changes could not be accepted")
 		return
 	}
 	version, err := deps.review.SaveHumanReview(r.Context(), id, request.BaseVersion, proposal, deps.actor)
 	if err != nil {
-		writeReviewError(w, err)
+		writeReviewError(w, r, err)
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
@@ -249,7 +249,7 @@ func saveHumanReview(w http.ResponseWriter, r *http.Request, deps apiDependencie
 
 func rejectDocument(w http.ResponseWriter, r *http.Request, deps apiDependencies) {
 	if deps.review == nil {
-		writeAPIError(w, 500, "internal_error", "request could not be completed")
+		writeAPIError(w, r, 500, "internal_error", "request could not be completed")
 		return
 	}
 	id, ok := documentID(w, r)
@@ -260,11 +260,11 @@ func rejectDocument(w http.ResponseWriter, r *http.Request, deps apiDependencies
 		Confirm bool `json:"confirm"`
 	}
 	if err := decodeStrictJSON(w, r, &request); err != nil || !request.Confirm {
-		writeAPIError(w, http.StatusBadRequest, "invalid_rejection", "rejection must be confirmed")
+		writeAPIError(w, r, http.StatusBadRequest, "invalid_rejection", "rejection must be confirmed")
 		return
 	}
 	if err := deps.review.RejectDocument(r.Context(), id, deps.actor); err != nil {
-		writeReviewError(w, err)
+		writeReviewError(w, r, err)
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
@@ -274,7 +274,7 @@ func rejectDocument(w http.ResponseWriter, r *http.Request, deps apiDependencies
 
 func approveDocument(w http.ResponseWriter, r *http.Request, deps apiDependencies) {
 	if deps.review == nil {
-		writeAPIError(w, 500, "internal_error", "request could not be completed")
+		writeAPIError(w, r, 500, "internal_error", "request could not be completed")
 		return
 	}
 	id, ok := documentID(w, r)
@@ -286,12 +286,12 @@ func approveDocument(w http.ResponseWriter, r *http.Request, deps apiDependencie
 		Confirm       bool `json:"confirm"`
 	}
 	if err := decodeStrictJSON(w, r, &request); err != nil || !request.Confirm || request.VersionNumber < 1 {
-		writeAPIError(w, http.StatusBadRequest, "invalid_approval", "approval must target an explicit version and be confirmed")
+		writeAPIError(w, r, http.StatusBadRequest, "invalid_approval", "approval must target an explicit version and be confirmed")
 		return
 	}
 	ver, err := deps.review.ApproveDocument(r.Context(), id, request.VersionNumber, deps.actor)
 	if err != nil {
-		writeReviewError(w, err)
+		writeReviewError(w, r, err)
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
@@ -307,7 +307,7 @@ func approveDocument(w http.ResponseWriter, r *http.Request, deps apiDependencie
 
 func exportCSV(w http.ResponseWriter, r *http.Request, deps apiDependencies) {
 	if deps.review == nil {
-		writeAPIError(w, 500, "internal_error", "request could not be completed")
+		writeAPIError(w, r, 500, "internal_error", "request could not be completed")
 		return
 	}
 	id, ok := documentID(w, r)
@@ -316,12 +316,12 @@ func exportCSV(w http.ResponseWriter, r *http.Request, deps apiDependencies) {
 	}
 	csvBytes, err := deps.review.ExportCSV(r.Context(), id, deps.actor)
 	if err != nil {
-		writeReviewError(w, err)
+		writeReviewError(w, r, err)
 		return
 	}
 	version, err := deps.review.ApprovedVersionNumber(r.Context(), id)
 	if err != nil {
-		writeReviewError(w, err)
+		writeReviewError(w, r, err)
 		return
 	}
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
@@ -335,7 +335,7 @@ func exportCSV(w http.ResponseWriter, r *http.Request, deps apiDependencies) {
 
 func exportWebhook(w http.ResponseWriter, r *http.Request, deps apiDependencies) {
 	if deps.review == nil {
-		writeAPIError(w, 500, "internal_error", "request could not be completed")
+		writeAPIError(w, r, 500, "internal_error", "request could not be completed")
 		return
 	}
 	id, ok := documentID(w, r)
@@ -343,19 +343,19 @@ func exportWebhook(w http.ResponseWriter, r *http.Request, deps apiDependencies)
 		return
 	}
 	if !deps.webhookConfigured {
-		writeReviewError(w, processing.ErrWebhookNotConfigured)
+		writeReviewError(w, r, processing.ErrWebhookNotConfigured)
 		return
 	}
 	if r.ContentLength > 0 && r.Body != nil {
 		var dummy struct{}
 		if err := decodeStrictJSON(w, r, &dummy); err != nil {
-			writeAPIError(w, http.StatusBadRequest, "invalid_export", "malformed request payload")
+			writeAPIError(w, r, http.StatusBadRequest, "invalid_export", "malformed request payload")
 			return
 		}
 	}
 	rec, err := deps.review.EnqueueWebhookExport(r.Context(), id, deps.actor)
 	if err != nil {
-		writeReviewError(w, err)
+		writeReviewError(w, r, err)
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
@@ -377,31 +377,31 @@ func decodeStrictJSON(w http.ResponseWriter, r *http.Request, target any) error 
 	return nil
 }
 
-func writeReviewError(w http.ResponseWriter, err error) {
+func writeReviewError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, processing.ErrDocumentNotFound):
-		writeAPIError(w, http.StatusNotFound, "document_not_found", "document could not be found")
+		writeAPIError(w, r, http.StatusNotFound, "document_not_found", "document could not be found")
 	case errors.Is(err, processing.ErrInvalidDocumentState):
-		writeAPIError(w, http.StatusConflict, "invalid_document_transition", "document is not available for that action")
+		writeAPIError(w, r, http.StatusConflict, "invalid_document_transition", "document is not available for that action")
 	case errors.Is(err, processing.ErrStaleReviewVersion):
-		writeAPIError(w, http.StatusConflict, "stale_review_version", "review changed; reload the document before saving")
+		writeAPIError(w, r, http.StatusConflict, "stale_review_version", "review changed; reload the document before saving")
 	case errors.Is(err, processing.ErrInvalidHumanReviewEdit):
-		writeAPIError(w, http.StatusBadRequest, "invalid_review", "review changes could not be accepted")
+		writeAPIError(w, r, http.StatusBadRequest, "invalid_review", "review changes could not be accepted")
 	case errors.Is(err, processing.ErrInvalidApproval):
-		writeAPIError(w, http.StatusBadRequest, "invalid_approval", "approval request was invalid")
+		writeAPIError(w, r, http.StatusBadRequest, "invalid_approval", "approval request was invalid")
 	case errors.Is(err, processing.ErrInvalidExport):
-		writeAPIError(w, http.StatusBadRequest, "invalid_export", "export request was invalid")
+		writeAPIError(w, r, http.StatusBadRequest, "invalid_export", "export request was invalid")
 	case errors.Is(err, processing.ErrWebhookNotConfigured):
-		writeAPIError(w, http.StatusBadRequest, "webhook_not_configured", "destination webhook URL is not configured on server")
+		writeAPIError(w, r, http.StatusBadRequest, "webhook_not_configured", "destination webhook URL is not configured on server")
 	default:
-		writeAPIError(w, http.StatusInternalServerError, "internal_error", "request could not be completed")
+		writeAPIError(w, r, http.StatusInternalServerError, "internal_error", "request could not be completed")
 	}
 }
 
 // getClientConfig exposes only presentation flags the browser needs. It must
 // never carry a secret, a destination, a path, or anything that grants
 // authority — the client is untrusted and this route is unauthenticated.
-func getClientConfig(w http.ResponseWriter, deps apiDependencies) {
+func getClientConfig(w http.ResponseWriter, _ *http.Request, deps apiDependencies) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	writeJSON(w, http.StatusOK, map[string]any{"public_demo": deps.publicDemo})
@@ -424,18 +424,18 @@ func uploadDocument(w http.ResponseWriter, r *http.Request, deps apiDependencies
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store")
 	if deps.intake == nil || deps.storage == nil {
-		writeAPIError(w, 500, "internal_error", "request could not be completed")
+		writeAPIError(w, r, 500, "internal_error", "request could not be completed")
 		return
 	}
 	// Checked before the body is read: a refused caller must not be able to make
 	// the server consume 20 MiB per attempt.
 	if allowed, retryAfter := deps.uploadLimiter.Allow(rateLimitClient(r)); !allowed {
 		w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())+1))
-		writeAPIError(w, http.StatusTooManyRequests, "rate_limited", "too many uploads; try again shortly")
+		writeAPIError(w, r, http.StatusTooManyRequests, "rate_limited", "too many uploads; try again shortly")
 		return
 	}
 	if encoding := r.Header.Get("Content-Encoding"); encoding != "" && encoding != "identity" {
-		writeAPIError(w, 400, "invalid_request", "request encoding is not supported")
+		writeAPIError(w, r, 400, "invalid_request", "request encoding is not supported")
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
@@ -443,10 +443,10 @@ func uploadDocument(w http.ResponseWriter, r *http.Request, deps apiDependencies
 	if err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
-			writeAPIError(w, 413, "file_too_large", "file could not be accepted")
+			writeAPIError(w, r, 413, "file_too_large", "file could not be accepted")
 			return
 		}
-		writeAPIError(w, 400, "invalid_request", "expected multipart form data")
+		writeAPIError(w, r, 400, "invalid_request", "expected multipart form data")
 		return
 	}
 	var part *multipart.Part
@@ -458,10 +458,10 @@ func uploadDocument(w http.ResponseWriter, r *http.Request, deps apiDependencies
 		if e != nil {
 			var maxErr *http.MaxBytesError
 			if errors.As(e, &maxErr) {
-				writeAPIError(w, 413, "file_too_large", "file could not be accepted")
+				writeAPIError(w, r, 413, "file_too_large", "file could not be accepted")
 				return
 			}
-			writeAPIError(w, 400, "invalid_request", "invalid multipart body")
+			writeAPIError(w, r, 400, "invalid_request", "invalid multipart body")
 			return
 		}
 		if p.FormName() == "file" {
@@ -469,12 +469,12 @@ func uploadDocument(w http.ResponseWriter, r *http.Request, deps apiDependencies
 			break // NextPart would discard the current stream; trailing fields are ignored.
 		} else {
 			_ = p.Close()
-			writeAPIError(w, 400, "invalid_request", "exactly one file is required")
+			writeAPIError(w, r, 400, "invalid_request", "exactly one file is required")
 			return
 		}
 	}
 	if part == nil {
-		writeAPIError(w, 400, "invalid_request", "exactly one file is required")
+		writeAPIError(w, r, 400, "invalid_request", "exactly one file is required")
 		return
 	}
 	defer part.Close()
@@ -484,7 +484,7 @@ func uploadDocument(w http.ResponseWriter, r *http.Request, deps apiDependencies
 		if errors.Is(err, documents.ErrTooLarge) {
 			status, code = 413, "file_too_large"
 		}
-		writeAPIError(w, status, code, "file could not be accepted")
+		writeAPIError(w, r, status, code, "file could not be accepted")
 		return
 	}
 	defer prepared.Remove()
@@ -496,36 +496,36 @@ func uploadDocument(w http.ResponseWriter, r *http.Request, deps apiDependencies
 		if nextErr != nil {
 			var maxErr *http.MaxBytesError
 			if errors.As(nextErr, &maxErr) {
-				writeAPIError(w, 413, "file_too_large", "file could not be accepted")
+				writeAPIError(w, r, 413, "file_too_large", "file could not be accepted")
 				return
 			}
-			writeAPIError(w, 400, "invalid_request", "invalid multipart body")
+			writeAPIError(w, r, 400, "invalid_request", "invalid multipart body")
 			return
 		}
 		_ = p.Close()
-		writeAPIError(w, 400, "invalid_request", "exactly one file is required")
+		writeAPIError(w, r, 400, "invalid_request", "exactly one file is required")
 		return
 	}
 	id, err := processing.NewID()
 	if err != nil {
-		writeAPIError(w, 500, "internal_error", "request could not be completed")
+		writeAPIError(w, r, 500, "internal_error", "request could not be completed")
 		return
 	}
 	objectID, err := processing.NewID()
 	if err != nil {
-		writeAPIError(w, 500, "internal_error", "request could not be completed")
+		writeAPIError(w, r, 500, "internal_error", "request could not be completed")
 		return
 	}
 	key := "objects/" + strings.ReplaceAll(objectID, "-", "") + prepared.Suffix
 	f, err := os.Open(prepared.Path)
 	if err != nil {
-		writeAPIError(w, 500, "internal_error", "request could not be completed")
+		writeAPIError(w, r, 500, "internal_error", "request could not be completed")
 		return
 	}
 	err = deps.storage.Put(r.Context(), key, f, prepared.Size)
 	_ = f.Close()
 	if err != nil {
-		writeAPIError(w, 500, "storage_error", "file could not be accepted")
+		writeAPIError(w, r, 500, "storage_error", "file could not be accepted")
 		return
 	}
 	now := time.Now().UTC()
@@ -533,10 +533,10 @@ func uploadDocument(w http.ResponseWriter, r *http.Request, deps apiDependencies
 	if err != nil {
 		_ = deps.storage.Delete(context.Background(), key)
 		if errors.Is(err, processing.ErrDuplicate) {
-			writeAPIError(w, 409, "duplicate_document", "a matching document already exists")
+			writeAPIError(w, r, 409, "duplicate_document", "a matching document already exists")
 			return
 		}
-		writeAPIError(w, 500, "internal_error", "request could not be completed")
+		writeAPIError(w, r, 500, "internal_error", "request could not be completed")
 		return
 	}
 	writeJSON(w, 201, map[string]any{"document": documents.UploadResult{ID: id, Status: "queued", CreatedAt: now}})
@@ -550,16 +550,16 @@ type apiError struct {
 	} `json:"error"`
 }
 
-func writeAPIError(w http.ResponseWriter, status int, code, message string) {
+// writeAPIError reports the id assigned at the edge rather than minting one of
+// its own, so the value a client sees in the envelope is the same value the
+// access log recorded and the response header carries.
+func writeAPIError(w http.ResponseWriter, r *http.Request, status int, code, message string) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	var body apiError
 	body.Error.Code = code
 	body.Error.Message = message
-	body.Error.RequestID, _ = processing.NewID()
-	if body.Error.RequestID == "" {
-		body.Error.RequestID = "request-failed"
-	}
+	body.Error.RequestID = requestID(r)
 	writeJSON(w, status, body)
 }
 func writeJSON(w http.ResponseWriter, status int, body any) {

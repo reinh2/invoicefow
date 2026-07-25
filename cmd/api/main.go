@@ -60,7 +60,8 @@ func main() {
 		publicDemo:        config.PublicDemo,
 		uploadLimiter:     ratelimit.New(config.UploadRatePerMinute, time.Minute),
 	}
-	server := &http.Server{Addr: config.APIAddress, Handler: newHandlerWithDependencies(deps), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
+	handler := withRequestContext(newHandlerWithDependencies(deps), logger)
+	server := &http.Server{Addr: config.APIAddress, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

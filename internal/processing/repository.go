@@ -177,23 +177,28 @@ func (r *Repository) Heartbeat(ctx context.Context, jobID, token string, lease t
 	}
 	return nil
 }
-func (r *Repository) FinishRetry(ctx context.Context, jobID, token, summary string, delay time.Duration) error {
+
+// FinishRetry closes the leased attempt and either schedules a retry or, when
+// the attempt budget is exhausted, dead-letters the job. It returns the outcome
+// it committed (OutcomeRetry or OutcomeDeadLetter) so a caller can report which
+// of the two happened without re-reading the row.
+func (r *Repository) FinishRetry(ctx context.Context, jobID, token, summary string, delay time.Duration) (string, error) {
 	if len(summary) > 500 {
 		summary = summary[:500]
 	}
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 	var attempts, max int
 	var documentID string
 	err = tx.QueryRow(ctx, `SELECT attempts,max_attempts,document_id FROM jobs WHERE id=$1 AND status='running' AND lease_token=$2 AND leased_until>now() FOR UPDATE`, jobID, token).Scan(&attempts, &max, &documentID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrLeaseLost
+		return "", ErrLeaseLost
 	}
 	if err != nil {
-		return err
+		return "", err
 	}
 	status := "ready"
 	if attempts >= max {
@@ -201,7 +206,7 @@ func (r *Repository) FinishRetry(ctx context.Context, jobID, token, summary stri
 	}
 	_, err = tx.Exec(ctx, `UPDATE jobs SET status=$3, lease_token=NULL, leased_until=NULL, next_attempt_at=CASE WHEN $3='ready' THEN now()+$4::interval ELSE NULL END,last_error=$5,updated_at=now() WHERE id=$1 AND lease_token=$2`, jobID, token, status, delay.String(), summary)
 	if err != nil {
-		return err
+		return "", err
 	}
 	outcome := "retryable_failure"
 	if status == "dead_letter" {
@@ -209,16 +214,22 @@ func (r *Repository) FinishRetry(ctx context.Context, jobID, token, summary stri
 	}
 	_, err = tx.Exec(ctx, `UPDATE job_attempts SET finished_at=now(),outcome=$3,error_summary=$4 WHERE job_id=$1 AND lease_token=$2 AND finished_at IS NULL`, jobID, token, outcome, summary)
 	if err != nil {
-		return err
+		return "", err
 	}
 	nextDocumentStatus, action := "queued", "processing_retry_scheduled"
 	if status == "dead_letter" {
 		nextDocumentStatus, action = "failed", "processing_dead_lettered"
 	}
 	if err := transitionDocumentWithAudit(ctx, tx, documentID, "processing", nextDocumentStatus, action, "system"); err != nil {
-		return err
+		return "", err
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return "", err
+	}
+	if status == "dead_letter" {
+		return OutcomeDeadLetter, nil
+	}
+	return OutcomeRetry, nil
 }
 
 // FinishPermanent records one non-retryable processing failure and transitions
@@ -565,11 +576,14 @@ func (r *Repository) FinishExportSuccess(ctx context.Context, jobID, token, expo
 	return tx.Commit(ctx)
 }
 
-func (r *Repository) FinishExportRetry(ctx context.Context, jobID, token, exportID, summary string, delay time.Duration) error {
+// FinishExportRetry closes the leased export attempt and either schedules a
+// retry or dead-letters the export. Like FinishRetry it returns the outcome it
+// committed, so a caller can report which of the two happened.
+func (r *Repository) FinishExportRetry(ctx context.Context, jobID, token, exportID, summary string, delay time.Duration) (string, error) {
 	safeSummary := "webhook delivery temporary failure"
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
@@ -578,10 +592,10 @@ func (r *Repository) FinishExportRetry(ctx context.Context, jobID, token, export
 	var versionNumber int
 	err = tx.QueryRow(ctx, `SELECT j.attempts,j.max_attempts,j.document_id,v.version_number FROM jobs j JOIN exports e ON e.job_id=j.id JOIN invoice_versions v ON v.id=e.version_id WHERE j.id=$1 AND j.status='running' AND j.lease_token=$2 AND j.leased_until>now() FOR UPDATE`, jobID, token).Scan(&attempts, &max, &documentID, &versionNumber)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrLeaseLost
+		return "", ErrLeaseLost
 	}
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	status := "ready"
@@ -592,7 +606,7 @@ func (r *Repository) FinishExportRetry(ctx context.Context, jobID, token, export
 	now := time.Now().UTC()
 	_, err = tx.Exec(ctx, `UPDATE jobs SET status=$3, lease_token=NULL, leased_until=NULL, next_attempt_at=CASE WHEN $3='ready' THEN now()+$4::interval ELSE NULL END, last_error=$5, updated_at=$6 WHERE id=$1 AND lease_token=$2`, jobID, token, status, delay.String(), safeSummary, now)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	outcome := "retryable_failure"
@@ -601,28 +615,34 @@ func (r *Repository) FinishExportRetry(ctx context.Context, jobID, token, export
 	}
 	_, err = tx.Exec(ctx, `UPDATE job_attempts SET finished_at=$4, outcome=$3, error_summary=$5 WHERE job_id=$1 AND lease_token=$2 AND finished_at IS NULL`, jobID, token, outcome, now, safeSummary)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	if status == "ready" {
 		if err := tx.QueryRow(ctx, `UPDATE exports SET status='retrying',attempts=$2,next_attempt_at=now()+$3::interval,error_summary='webhook delivery temporary failure',updated_at=$4 WHERE id=$1 AND job_id=$5 RETURNING id`, exportID, attempts, delay.String(), now, jobID).Scan(new(string)); err != nil {
-			return err
+			return "", err
 		}
 		if err := appendAudit(ctx, tx, documentID, "export_retry_scheduled", "system", map[string]any{"version_number": versionNumber, "attempt": attempts, "next_attempt_in_seconds": int(delay.Seconds())}); err != nil {
-			return err
+			return "", err
 		}
 	} else if status == "dead_letter" {
 		if tag, err := tx.Exec(ctx, `UPDATE exports SET status='dead_letter',attempts=$2,next_attempt_at=NULL,error_summary='webhook delivery failed (exhausted retries)',updated_at=$3 WHERE id=$1 AND job_id=$4`, exportID, attempts, now, jobID); err != nil {
-			return err
+			return "", err
 		} else if tag.RowsAffected() != 1 {
-			return ErrLeaseLost
+			return "", ErrLeaseLost
 		}
 		if err := appendAudit(ctx, tx, documentID, "export_dead_lettered", "system", map[string]any{"version_number": versionNumber, "attempt": attempts, "reason": "retry limit exhausted"}); err != nil {
-			return err
+			return "", err
 		}
 	}
 
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return "", err
+	}
+	if status == "dead_letter" {
+		return OutcomeDeadLetter, nil
+	}
+	return OutcomeRetry, nil
 }
 
 func (r *Repository) FinishExportPermanent(ctx context.Context, jobID, token, exportID, summary string) error {

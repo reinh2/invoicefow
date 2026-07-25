@@ -195,12 +195,7 @@ var ErrInvalidCursor = errors.New("invalid pagination cursor")
 // The summary values come from the document's newest version, which is a
 // proposal under review, not authoritative financial data.
 func (r *Repository) ListDocuments(ctx context.Context, pageSize int, cursor string) (DocumentPage, error) {
-	if pageSize <= 0 {
-		pageSize = defaultDocumentPageSize
-	}
-	if pageSize > maxDocumentPageSize {
-		pageSize = maxDocumentPageSize
-	}
+	pageSize = clampDocumentPageSize(pageSize)
 	cursorTime, cursorID, err := decodeDocumentCursor(cursor)
 	if err != nil {
 		return DocumentPage{}, err
@@ -255,6 +250,54 @@ LIMIT $3`, cursorTime, cursorID, pageSize+1)
 		page.NextCursor = encodeDocumentCursor(last.CreatedAt, last.ID)
 	}
 	return page, nil
+}
+
+// clampDocumentPageSize bounds the page a client may ask for. Zero or less
+// means "unspecified" and gets the default; anything above the maximum is
+// capped rather than rejected, so a client can neither request an unbounded
+// scan nor lock itself out by asking for too much.
+func clampDocumentPageSize(pageSize int) int {
+	if pageSize <= 0 {
+		return defaultDocumentPageSize
+	}
+	if pageSize > maxDocumentPageSize {
+		return maxDocumentPageSize
+	}
+	return pageSize
+}
+
+// requireNeedsReview is the single guard for every action that may happen only
+// while a document is still under review: saving an edit, rejecting, approving.
+func requireNeedsReview(status string) error {
+	if status != string(invoices.StateNeedsReview) {
+		return ErrInvalidDocumentState
+	}
+	return nil
+}
+
+// requireExportableVersion authorizes an export and returns the exact version
+// it must target. Both conditions matter: the document must be approved or
+// already exported, *and* it must carry the immutable approved-version
+// reference, because only that exact version may ever be exported.
+func requireExportableVersion(status string, approvedVersionID *string) (string, error) {
+	if status != string(invoices.StateApproved) && status != string(invoices.StateExported) {
+		return "", ErrInvalidDocumentState
+	}
+	if approvedVersionID == nil || *approvedVersionID == "" {
+		return "", ErrInvalidDocumentState
+	}
+	return *approvedVersionID, nil
+}
+
+// Export idempotency keys are derived only from the document and the exact
+// approved version, so repeating an export of the same version reuses one
+// record and one delivery key, while a different version is a different export.
+func csvExportIdempotencyKey(documentID, versionID string) string {
+	return fmt.Sprintf("csv_export:%s:%s", documentID, versionID)
+}
+
+func webhookExportIdempotencyKey(documentID, versionID string) string {
+	return fmt.Sprintf("webhook_export:%s:%s", documentID, versionID)
 }
 
 // validUUID accepts only the canonical lowercase UUID text form, so a cursor
@@ -422,8 +465,8 @@ func (r *Repository) SaveHumanReview(ctx context.Context, documentID string, exp
 	} else if err != nil {
 		return 0, err
 	}
-	if status != string(invoices.StateNeedsReview) {
-		return 0, ErrInvalidDocumentState
+	if err := requireNeedsReview(status); err != nil {
+		return 0, err
 	}
 	var latest int
 	var evidence, diagnostics json.RawMessage
@@ -465,8 +508,8 @@ func (r *Repository) RejectDocument(ctx context.Context, documentID, actor strin
 	} else if err != nil {
 		return err
 	}
-	if status != string(invoices.StateNeedsReview) {
-		return ErrInvalidDocumentState
+	if err := requireNeedsReview(status); err != nil {
+		return err
 	}
 	if _, err = tx.Exec(ctx, `UPDATE documents SET status='rejected',updated_at=now() WHERE id=$1`, documentID); err != nil {
 		return err
@@ -493,8 +536,8 @@ func (r *Repository) ApproveDocument(ctx context.Context, documentID string, ver
 	} else if err != nil {
 		return 0, err
 	}
-	if status != string(invoices.StateNeedsReview) {
-		return 0, ErrInvalidDocumentState
+	if err := requireNeedsReview(status); err != nil {
+		return 0, err
 	}
 
 	var latestVer int
@@ -541,13 +584,14 @@ func (r *Repository) ExportCSV(ctx context.Context, documentID string, actor str
 	} else if err != nil {
 		return nil, err
 	}
-	if (status != string(invoices.StateApproved) && status != string(invoices.StateExported)) || approvedVersionID == nil {
-		return nil, ErrInvalidDocumentState
+	versionID, err := requireExportableVersion(status, approvedVersionID)
+	if err != nil {
+		return nil, err
 	}
 
 	var normalizedJSON []byte
 	var versionNumber int
-	if err := tx.QueryRow(ctx, `SELECT version_number, normalized FROM invoice_versions WHERE id=$1`, *approvedVersionID).Scan(&versionNumber, &normalizedJSON); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT version_number, normalized FROM invoice_versions WHERE id=$1`, versionID).Scan(&versionNumber, &normalizedJSON); err != nil {
 		return nil, err
 	}
 
@@ -561,7 +605,7 @@ func (r *Repository) ExportCSV(ctx context.Context, documentID string, actor str
 		return nil, fmt.Errorf("generate csv: %w", err)
 	}
 
-	idempotencyKey := fmt.Sprintf("csv_export:%s:%s", documentID, *approvedVersionID)
+	idempotencyKey := csvExportIdempotencyKey(documentID, versionID)
 	exportID, err := NewID()
 	if err != nil {
 		return nil, err
@@ -571,7 +615,7 @@ func (r *Repository) ExportCSV(ctx context.Context, documentID string, actor str
 	var existing string
 	err = tx.QueryRow(ctx, `SELECT id FROM exports WHERE idempotency_key=$1`, idempotencyKey).Scan(&existing)
 	if errors.Is(err, pgx.ErrNoRows) {
-		_, err = tx.Exec(ctx, `INSERT INTO exports (id, document_id, version_id, export_type, status, idempotency_key, destination_ref, destination_label, created_at, updated_at) VALUES ($1,$2,$3,'csv','succeeded',$4,'local:csv-download','CSV download',$5,$5)`, exportID, documentID, *approvedVersionID, idempotencyKey, now)
+		_, err = tx.Exec(ctx, `INSERT INTO exports (id, document_id, version_id, export_type, status, idempotency_key, destination_ref, destination_label, created_at, updated_at) VALUES ($1,$2,$3,'csv','succeeded',$4,'local:csv-download','CSV download',$5,$5)`, exportID, documentID, versionID, idempotencyKey, now)
 		if err != nil {
 			return nil, fmt.Errorf("insert csv export record: %w", err)
 		}
@@ -628,16 +672,17 @@ func (r *Repository) EnqueueWebhookExport(ctx context.Context, documentID string
 	} else if err != nil {
 		return ExportRecord{}, err
 	}
-	if (status != string(invoices.StateApproved) && status != string(invoices.StateExported)) || approvedVersionID == nil {
-		return ExportRecord{}, ErrInvalidDocumentState
-	}
-
-	var versionNumber int
-	if err := tx.QueryRow(ctx, `SELECT version_number FROM invoice_versions WHERE id=$1`, *approvedVersionID).Scan(&versionNumber); err != nil {
+	approvedID, err := requireExportableVersion(status, approvedVersionID)
+	if err != nil {
 		return ExportRecord{}, err
 	}
 
-	idempotencyKey := fmt.Sprintf("webhook_export:%s:%s", documentID, *approvedVersionID)
+	var versionNumber int
+	if err := tx.QueryRow(ctx, `SELECT version_number FROM invoice_versions WHERE id=$1`, approvedID).Scan(&versionNumber); err != nil {
+		return ExportRecord{}, err
+	}
+
+	idempotencyKey := webhookExportIdempotencyKey(documentID, approvedID)
 	now := time.Now().UTC()
 
 	var record ExportRecord
@@ -658,7 +703,7 @@ func (r *Repository) EnqueueWebhookExport(ctx context.Context, documentID string
 			return ExportRecord{}, fmt.Errorf("enqueue export job: %w", err)
 		}
 
-		_, err = tx.Exec(ctx, `INSERT INTO exports (id, document_id, version_id, export_type, status, idempotency_key, destination_ref, destination_label, job_id, created_at, updated_at) VALUES ($1,$2,$3,'webhook','pending',$4,$5,$6,$7,$8,$8)`, exportID, documentID, *approvedVersionID, idempotencyKey, destinationRef, destinationLabel, jobID, now)
+		_, err = tx.Exec(ctx, `INSERT INTO exports (id, document_id, version_id, export_type, status, idempotency_key, destination_ref, destination_label, job_id, created_at, updated_at) VALUES ($1,$2,$3,'webhook','pending',$4,$5,$6,$7,$8,$8)`, exportID, documentID, approvedID, idempotencyKey, destinationRef, destinationLabel, jobID, now)
 		if err != nil {
 			return ExportRecord{}, fmt.Errorf("insert webhook export record: %w", err)
 		}

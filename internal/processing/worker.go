@@ -46,6 +46,15 @@ type Worker struct {
 	// passed here; tool output, storage paths, document text, and the API key
 	// never reach this hook.
 	OnProviderError func(documentID string, err error)
+
+	// OnProcessFinished and OnExportFinished optionally report one finished
+	// durable job to an observer. outcome is one of OutcomeSuccess,
+	// OutcomeRetry, or OutcomeDeadLetter — server-owned constants, never
+	// derived from document content. The duration covers the whole extraction
+	// attempt, successful or not. Both hooks are nil in the default wiring, so
+	// nothing about job execution depends on an observer being installed.
+	OnProcessFinished func(outcome string, duration time.Duration)
+	OnExportFinished  func(outcome string)
 }
 
 // RunOnce claims at most one durable process job and records either an
@@ -60,16 +69,46 @@ func (w Worker) RunOnce(ctx context.Context) (bool, error) {
 	}
 	workCtx, cancel := context.WithTimeout(ctx, maxDuration(w.Limits.PDFTimeout, w.Limits.OCRTimeout)+5*time.Second)
 	defer cancel()
+	started := time.Now()
 	snapshot, err := w.extract(workCtx, claimed.DocumentID)
+	elapsed := time.Since(started)
 	if err == nil {
-		return true, w.Repository.FinishExtraction(ctx, claimed.ID, claimed.LeaseToken, snapshot)
+		finishErr := w.Repository.FinishExtraction(ctx, claimed.ID, claimed.LeaseToken, snapshot)
+		if finishErr == nil {
+			w.reportProcessOutcome(OutcomeSuccess, elapsed)
+		}
+		return true, finishErr
 	}
 	w.reportProviderError(claimed.DocumentID, err)
 	summary := processingErrorSummary(err)
 	if permanentProcessingError(err) {
-		return true, w.Repository.FinishPermanent(ctx, claimed.ID, claimed.LeaseToken, summary)
+		finishErr := w.Repository.FinishPermanent(ctx, claimed.ID, claimed.LeaseToken, summary)
+		if finishErr == nil {
+			// A non-retryable failure dead-letters the job immediately.
+			w.reportProcessOutcome(OutcomeDeadLetter, elapsed)
+		}
+		return true, finishErr
 	}
-	return true, w.Repository.FinishRetry(ctx, claimed.ID, claimed.LeaseToken, summary, w.RetryDelay)
+	outcome, finishErr := w.Repository.FinishRetry(ctx, claimed.ID, claimed.LeaseToken, summary, w.RetryDelay)
+	if finishErr == nil {
+		w.reportProcessOutcome(outcome, elapsed)
+	}
+	return true, finishErr
+}
+
+// reportProcessOutcome and reportExportOutcome report only after the durable
+// transition committed, so a counter never claims an outcome the database did
+// not record.
+func (w Worker) reportProcessOutcome(outcome string, duration time.Duration) {
+	if w.OnProcessFinished != nil {
+		w.OnProcessFinished(outcome, duration)
+	}
+}
+
+func (w Worker) reportExportOutcome(outcome string) {
+	if w.OnExportFinished != nil {
+		w.OnExportFinished(outcome)
+	}
 }
 
 func (w Worker) RunExportOnce(ctx context.Context) (bool, error) {
@@ -89,14 +128,27 @@ func (w Worker) RunExportOnce(ctx context.Context) (bool, error) {
 
 	res := w.WebhookSender.Send(ctx, payload)
 	if res.Error == nil {
-		return true, w.Repository.FinishExportSuccess(ctx, claimed.ID, claimed.LeaseToken, details.ExportID, "system")
+		finishErr := w.Repository.FinishExportSuccess(ctx, claimed.ID, claimed.LeaseToken, details.ExportID, "system")
+		if finishErr == nil {
+			w.reportExportOutcome(OutcomeSuccess)
+		}
+		return true, finishErr
 	}
 
 	summary := "webhook delivery failed"
 	if res.Retryable {
-		return true, w.Repository.FinishExportRetry(ctx, claimed.ID, claimed.LeaseToken, details.ExportID, summary, w.RetryDelay)
+		outcome, finishErr := w.Repository.FinishExportRetry(ctx, claimed.ID, claimed.LeaseToken, details.ExportID, summary, w.RetryDelay)
+		if finishErr == nil {
+			w.reportExportOutcome(outcome)
+		}
+		return true, finishErr
 	}
-	return true, w.Repository.FinishExportPermanent(ctx, claimed.ID, claimed.LeaseToken, details.ExportID, summary)
+	finishErr := w.Repository.FinishExportPermanent(ctx, claimed.ID, claimed.LeaseToken, details.ExportID, summary)
+	if finishErr == nil {
+		// A non-retryable delivery failure dead-letters the export immediately.
+		w.reportExportOutcome(OutcomeDeadLetter)
+	}
+	return true, finishErr
 }
 
 func buildWebhookPayload(details ExportJobDetails) export.WebhookPayload {

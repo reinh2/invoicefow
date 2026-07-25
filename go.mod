@@ -2,6 +2,10 @@ module github.com/reinhlord/invoiceflow
 
 go 1.26.0
 
+// web/node_modules ships a third-party Go package (flatted). Without this it
+// joins ./... and appears in this project's own build and test output.
+ignore ./web/node_modules
+
 require github.com/jackc/pgx/v5 v5.8.0
 
 require (

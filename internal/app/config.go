@@ -46,24 +46,30 @@ type Config struct {
 	// UploadRatePerMinute bounds uploads per client address. Zero disables
 	// limiting, which is the default for the local demo.
 	UploadRatePerMinute int
+	// MetricsAddress is the listen address of the operational metrics endpoint
+	// (ADR-017). Empty — the default — means no metrics listener is opened at
+	// all. The endpoint has no authentication of its own and reveals traffic
+	// volume, so it must never share the public API's address.
+	MetricsAddress string
 }
 
 func LoadConfig() (Config, error) {
 	c := Config{
-		DatabaseURL:   envOr("DATABASE_URL", defaultDatabaseURL),
-		APIAddress:    envOr("API_ADDR", defaultAPIAddress),
-		MigrationDir:  envOr("MIGRATIONS_DIR", "db/migrations"),
-		DemoActor:     envOr("DEMO_ACTOR", defaultDemoActor),
-		DBTimeout:     10 * time.Second,
-		StorageDir:    envOr("STORAGE_DIR", "./var/storage"),
-		WebhookSecret: os.Getenv("WEBHOOK_SECRET"),
-		WebhookURL:    os.Getenv("WEBHOOK_URL"),
-		WebhookMode:   envOr("WEBHOOK_MODE", "strict"),
-		WebDir:        os.Getenv("WEB_DIR"),
-		Extractor:     envOr("EXTRACTOR", "fake"),
-		OpenAIAPIKey:  os.Getenv("OPENAI_API_KEY"),
-		OpenAIModel:   os.Getenv("OPENAI_MODEL"),
-		OpenAIBaseURL: os.Getenv("OPENAI_BASE_URL"),
+		DatabaseURL:    envOr("DATABASE_URL", defaultDatabaseURL),
+		APIAddress:     envOr("API_ADDR", defaultAPIAddress),
+		MigrationDir:   envOr("MIGRATIONS_DIR", "db/migrations"),
+		DemoActor:      envOr("DEMO_ACTOR", defaultDemoActor),
+		DBTimeout:      10 * time.Second,
+		StorageDir:     envOr("STORAGE_DIR", "./var/storage"),
+		WebhookSecret:  os.Getenv("WEBHOOK_SECRET"),
+		WebhookURL:     os.Getenv("WEBHOOK_URL"),
+		WebhookMode:    envOr("WEBHOOK_MODE", "strict"),
+		WebDir:         os.Getenv("WEB_DIR"),
+		Extractor:      envOr("EXTRACTOR", "fake"),
+		OpenAIAPIKey:   os.Getenv("OPENAI_API_KEY"),
+		OpenAIModel:    os.Getenv("OPENAI_MODEL"),
+		OpenAIBaseURL:  os.Getenv("OPENAI_BASE_URL"),
+		MetricsAddress: strings.TrimSpace(os.Getenv("METRICS_ADDR")),
 	}
 	publicDemo, err := envBool("PUBLIC_DEMO")
 	if err != nil {
@@ -83,6 +89,11 @@ func LoadConfig() (Config, error) {
 	}
 	if c.Extractor == "openai" && c.OpenAIAPIKey == "" {
 		return Config{}, fmt.Errorf("EXTRACTOR=openai requires a non-empty OPENAI_API_KEY")
+	}
+	// Refusing the API's own address is the one configuration mistake that would
+	// silently publish operational volume on a public instance.
+	if c.MetricsAddress != "" && c.MetricsAddress == c.APIAddress {
+		return Config{}, fmt.Errorf("METRICS_ADDR must not be the same address as API_ADDR")
 	}
 	if c.WebhookMode != "strict" && c.WebhookMode != "controlled" {
 		return Config{}, fmt.Errorf("WEBHOOK_MODE must be strict or controlled")

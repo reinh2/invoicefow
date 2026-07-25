@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -11,6 +14,7 @@ import (
 	"github.com/reinhlord/invoiceflow/internal/app"
 	"github.com/reinhlord/invoiceflow/internal/export"
 	"github.com/reinhlord/invoiceflow/internal/extraction"
+	"github.com/reinhlord/invoiceflow/internal/metrics"
 	"github.com/reinhlord/invoiceflow/internal/platform"
 	"github.com/reinhlord/invoiceflow/internal/processing"
 )
@@ -42,6 +46,8 @@ func main() {
 		os.Exit(1)
 	}
 	repository := processing.NewRepository(pool)
+	instruments := metrics.NewWorker(repository)
+	startMetricsServer(ctx, logger, config.MetricsAddress, instruments)
 	limits := extraction.DefaultLimits()
 	structured, err := buildStructuredExtractor(config)
 	if err != nil {
@@ -63,6 +69,11 @@ func main() {
 		OnProviderError: func(documentID string, err error) {
 			logger.Error("structured extraction provider failed", "document_id", documentID, "error", err.Error())
 		},
+		OnProcessFinished: func(outcome string, duration time.Duration) {
+			instruments.ProcessJobs.Inc(outcome)
+			instruments.ExtractionDuration.Observe(duration.Seconds())
+		},
+		OnExportFinished: func(outcome string) { instruments.ExportJobs.Inc(outcome) },
 	}
 	maintain := func() {
 		maintenanceCtx, maintenanceCancel := context.WithTimeout(ctx, config.DBTimeout)
@@ -113,6 +124,39 @@ func main() {
 		}
 	}()
 	<-ctx.Done()
+}
+
+// startMetricsServer opens the operational metrics listener when one is
+// configured. An empty address — the default — opens no listener at all, so the
+// local demo and every existing deployment are unchanged.
+//
+// The listener is deliberately separate from the API server: the exposition
+// reveals traffic volume and queue depth and carries no authentication of its
+// own, so it must be bound to an address that is not publicly reachable
+// (ADR-017). A bind failure is fatal, because silently running without the
+// endpoint an operator configured would be worse than not starting.
+func startMetricsServer(ctx context.Context, logger *slog.Logger, address string, instruments *metrics.Worker) {
+	if address == "" {
+		return
+	}
+	server := &http.Server{Addr: address, Handler: instruments.Registry.Handler(), ReadHeaderTimeout: 5 * time.Second}
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		logger.Error("metrics listener failed", "error", err)
+		os.Exit(1)
+	}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+	}()
+	go func() {
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("metrics server stopped", "error", err)
+		}
+	}()
+	logger.Info("metrics listening", "address", address)
 }
 
 // buildStructuredExtractor selects the structured-extraction provider from

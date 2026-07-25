@@ -306,8 +306,18 @@ func TestFinishRetryDeadLettersAtMaximumAttempts(t *testing.T) {
 			t.Fatalf("claim %d: job=%+v err=%v", attempt, job, err)
 		}
 		summary := fmt.Sprintf("temporary failure %d", attempt)
-		if err := repo.FinishRetry(ctx, job.ID, job.LeaseToken, summary, 0); err != nil {
+		outcome, err := repo.FinishRetry(ctx, job.ID, job.LeaseToken, summary, 0)
+		if err != nil {
 			t.Fatalf("FinishRetry %d: %v", attempt, err)
+		}
+		// The fifth attempt exhausts max_attempts, so only it may report a
+		// dead letter. An earlier dead letter would mean the budget shrank.
+		want := OutcomeRetry
+		if attempt == 5 {
+			want = OutcomeDeadLetter
+		}
+		if outcome != want {
+			t.Fatalf("FinishRetry %d reported %q, want %q", attempt, outcome, want)
 		}
 	}
 	var jobStatus, documentStatus, lastError string
