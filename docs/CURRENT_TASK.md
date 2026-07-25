@@ -1,5 +1,75 @@
 # Current Task
 
+## Provenance story — scroll-scrubbed scene (ADR-018)
+
+The provenance walkthrough is now a two-column scene: a scroll-scrubbed clip that
+sticks on the left while the four step cards scroll past it on the right. The
+clip is generated art — a sheet of paper, a second sheet layering in behind it,
+and three plotter-drawn lines ending in blue, amber and green markers — and
+ADR-018 records why generated media is admissible at all: it is
+non-representational, contains no interface, no legible text and no product
+claim, and the ADR-005 obligation is still discharged by the captured
+`demo.webm`, not by this.
+
+`web/src/components/ScrubVideo.tsx` drives the playhead from scroll position and
+nothing else: a paused element, progress from `getBoundingClientRect()` in a
+`requestAnimationFrame` loop, easing toward the target, seeks only past a frame of
+drift, and the loop gated by an `IntersectionObserver` so an off-screen section
+never drives a decoder. Reduced motion drops all of it and renders the clip's
+final frame as a still — the existing `DemoMedia` contract. Eleven tests cover
+it, including the cases that are easy to get wrong: the element is never
+autoplaying or controllable, the playhead clamps at both ends, an unknown duration
+leaves it alone, an unlaid-out wrapper stays at the start, and the reduced-motion
+path constructs no observer at all.
+
+The scrub wrapper takes its height from the grid row — from the cards — rather
+than from a viewport multiple, so the playhead spans exactly the four states.
+Measured at 1440x900: a quarter of the scene is 2.52 s of a 10.08 s clip, so each
+of the clip's four staged beats lands opposite its own card. Below 901px the panel
+is a plain block above the cards, and there a wrapper shorter than the viewport
+resolves to the clip's **last** frame rather than its first, because a frozen
+first frame shows the setup of the animation and none of its point.
+
+**A real defect in the Go bundle handler was found by this.** `internal/webui`
+answered every request with `200` and the whole body — no `Accept-Ranges`, no
+`206`. For scripts, styles, and images that is fine; for a video it is fatal,
+because a browser seeking past what it has buffered asks for a byte range, and a
+server that ignores the ask makes seeking impossible rather than slow. The clip
+therefore showed its poster and never moved when served from the built bundle,
+while working on the Vite dev server, which does support ranges. `write` now
+goes through `http.ServeContent`, and a test asserts `206`, the exact bytes, and
+that the hardened header set still applies to a partial response. The
+pre-existing `demo.webm` could not be seeked either; nobody noticed because it
+plays linearly.
+
+**The hero application of the same component was reverted** before this. It was
+built and measured, then removed: giving the copy room forced the clip full-bleed
+and cropped to the viewport, which enlarged the paper by 125% and turned composed
+art into wallpaper. The static hero preview is restored unchanged. Two findings
+from that attempt are why the story clip works: the art must be generated with an
+**even background** (the hero clip's upper-left corner is a lit mid grey, not the
+page ink, so any letterboxed placement showed a hard band), and it must be
+**re-encoded all-intra** — both delivered masters carried roughly one keyframe per
+file, and without `-g 1` every seek decodes from the start.
+
+The clip is **square**, not 16:9. The motion in it is horizontal — document, then
+lines, then markers — so a vertical frame has nowhere to put that path, while
+16:9 in a 530px column left the portrait sheet 297px tall with half the frame
+empty above and below it. At 1:1 the panel is 529x529 and the sheet is twice as
+tall. The asset is `web/public/media/story-scrub.mp4` (1024x1024, 12 fps, 121
+frames, all keyframes, no audio, 1.6 MB) with `story-scrub-poster.jpg` (41 KB) as
+poster and reduced-motion still. Frame rate is traded for size deliberately: with a
+scroll-driven playhead the reader perceives position, not frame rate. The
+generation constraints and the exact ffmpeg invocation are in ADR-018.
+
+**Validation:** `format:check`, `lint`, `typecheck`, 51 frontend tests, and
+`vite build` pass. In a real browser at 1440x900 and 375x812: the wrapper height
+matches the card column exactly, the playhead tracks scroll linearly across five
+sampled positions, the stacked layout puts the panel above the cards with no
+sticky positioning, and there is no horizontal overflow. **Not verified in a
+browser:** the reduced-motion path (unit tests only) and the Compose-served
+bundle.
+
 ## Stage 9 — distribution, traceability, and documentation accuracy
 
 Every Stage 9 item except the public deployment is implemented. The deployment

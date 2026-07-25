@@ -172,3 +172,48 @@ func TestHandlerSetsHardenedResponseHeadersAndRejectsWrites(t *testing.T) {
 		t.Fatalf("405 Allow = %q", got)
 	}
 }
+
+// A browser seeking a paused video requests a byte range. Answering 200 with the
+// whole body instead of 206 with the requested bytes makes the seek fail, which
+// breaks the scroll-scrubbed clips on the landing page (ADR-018).
+func TestHandlerAnswersRangeRequestsForMedia(t *testing.T) {
+	root := writeBundle(t)
+	body := []byte("\x00\x00\x00\x18ftypmp42 not a real clip, twenty-plus bytes")
+	if err := os.WriteFile(filepath.Join(root, "media.mp4"), body, 0o644); err != nil {
+		t.Fatalf("write clip: %v", err)
+	}
+	bundle, err := Load(root)
+	if err != nil {
+		t.Fatalf("load bundle: %v", err)
+	}
+	handler := bundle.Handler()
+
+	full := get(t, handler, http.MethodGet, "/media.mp4")
+	if full.Code != http.StatusOK {
+		t.Fatalf("full request status = %d, want %d", full.Code, http.StatusOK)
+	}
+	if got := full.Header().Get("Accept-Ranges"); got != "bytes" {
+		t.Fatalf("Accept-Ranges = %q, want %q", got, "bytes")
+	}
+	if got := full.Header().Get("Content-Type"); got != "video/mp4" {
+		t.Fatalf("Content-Type = %q, want %q", got, "video/mp4")
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/media.mp4", nil)
+	request.Header.Set("Range", "bytes=4-11")
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusPartialContent {
+		t.Fatalf("range status = %d, want %d", recorder.Code, http.StatusPartialContent)
+	}
+	if got := recorder.Body.String(); got != string(body[4:12]) {
+		t.Fatalf("range body = %q, want %q", got, string(body[4:12]))
+	}
+	// The hardened header set still applies to a partial response.
+	if got := recorder.Header().Get("Content-Security-Policy"); got != contentSecurityPolicy {
+		t.Fatalf("range response CSP = %q, want the fixed policy", got)
+	}
+	if got := recorder.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("range response nosniff = %q, want %q", got, "nosniff")
+	}
+}

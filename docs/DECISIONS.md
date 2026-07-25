@@ -177,6 +177,17 @@ The landing page describes only shipped behavior. It contains no metric, custome
 
 **Consequences:** `docker compose up` now yields a complete demonstrable product on one loopback port, and real product media can be captured from it. This is asset delivery only: it adds no authentication, no session, no user-supplied content rendering, and no multi-user authorization claim. Production deployments would still place their own TLS termination, cache, and access control in front of this boundary.
 
+**Amendment (ADR-018).** Assets are written with `http.ServeContent` rather than
+a single `w.Write`, so the handler answers byte-range and conditional requests.
+This is not a performance refinement: a browser seeking a video it has not fully
+buffered requests a range, and answering every request with `200` and the whole
+body makes the seek fail rather than merely run slowly — which is exactly how the
+scroll-scrubbed clip failed when served from the bundle. The response still
+carries the same fixed headers on a `206`, and the content type still comes from
+the extension allowlist, never from the bytes: `ServeContent` is given an empty
+name and a zero modification time so it neither sniffs a type nor exposes a file
+identity.
+
 **Amendment (Stage 6 review).** The project code and security reviewers audited this boundary and found no high-severity issue; traversal, symlink escape, directory listing, content-type spoofing, and route confusion for real endpoints are structurally prevented. Two refinements were applied from that review. First, the fallback is registered on the bare `/` pattern (all methods) instead of `GET /`, so the reserved-prefix guard runs for every method: an unmatched or method-mismatched `/api/`, `/healthz`, or `/readyz` request now returns the JSON `route_not_found` envelope for any method (previously a non-GET request received Go's bare `405`), while method-specific API routes still win by specificity and a non-GET request to a non-reserved client path is a hardened `405`. The reserved-prefix check is case-insensitive. Second, the CSP tightens `object-src` to `'none'`, the 405 path emits the full hardened header set, and the load byte-budget is enforced against the bytes actually read. New tests in `cmd/api` and `internal/webui` cover the all-method envelope and the header/limit changes.
 
 ## ADR-014 — Optional live OpenAI structured-extraction provider
@@ -498,3 +509,128 @@ one header and one log line, and the metrics endpoint is read-only, aggregate,
 and off by default. This is not a full observability stack — there is no
 tracing, no exemplars, no per-route latency histogram, and no alerting — and
 none of those is claimed.
+
+## ADR-018 — Scroll-scrubbed art and the generated-media boundary
+
+**Status:** Accepted. Applied to the provenance story; the hero application was
+built and **reverted** (see the revision notes)
+
+**Context:** The hero opened with a static CSS mock of the review screen — a
+decorative echo of the product, drawn in DOM. It was honest but inert, and it
+duplicated in markup what the story section below states properly. The landing
+already had one video (`DemoMedia`), but it autoplayed and looped, so the reader
+watched it rather than driving it.
+
+This introduces a question ADR-005 did not have to answer. That decision requires
+at least one factual asset **captured from the real application**, and
+`demo.webm` satisfies it. The new hero clip is different in kind: it is
+generated, not captured. A generated image of a product screen would be a
+fabricated claim about behaviour, which `AGENTS.md` forbids outright.
+
+**Decision:** Generated media is admissible only as **non-representational art**.
+The hero clip shows a sheet of paper on a desk with three light-lines extending
+from it to three markers — an abstraction of provenance, containing no interface,
+no screenshot, no legible text, no number, and no product claim. It carries the
+project's colour semantics rather than contradicting them: the paper is printed
+in neutral grey ink only, because on a source document a server warning (amber)
+or an approval (green) has no meaning; colour exists solely off-paper, where
+extraction happens. The only captured asset remains `demo.webm`, and it stays the
+answer to ADR-005. A generated frame that depicted the application would be
+rejected regardless of how it was produced.
+
+The playhead is driven by scroll position and by nothing else. `ScrubVideo`
+renders a paused video, computes the wrapper's progress through the viewport in
+a `requestAnimationFrame` loop, eases the playhead toward that target, and seeks
+only when the correction exceeds a frame. The loop runs only while an
+`IntersectionObserver` reports the section on screen, so an off-screen section
+never drives a decoder; where the API is absent the loop simply runs. Reduced
+motion drops the machinery entirely and renders the clip's final frame as a
+still, so that path presents the same moment rather than a degraded one — the
+existing `DemoMedia` contract.
+
+Two encoding constraints are part of the decision, not implementation detail. The
+asset must be **all-intra** (`-g 1 -keyint_min 1 -sc_threshold 0`) or every seek
+costs a decode from the start of the file; the delivered master had exactly one
+keyframe in 121 frames. And frame rate is traded for file size, because with a
+scroll-driven playhead the reader perceives position, not frame rate: 12 fps and
+a light denoise hold the same visual result at 1.5 MB where 24 fps with the
+original grain cost 8.3 MB.
+
+Layout follows the frame rather than the reverse — and this is where the hero
+application failed. To give the copy room the clip had to be full-bleed and
+cropped to the viewport, because inside the 1180px shell container the frame's
+empty right area is only about 380px, which is not a hero column. Filling a
+900px-tall viewport with a 16:9 frame enlarges the paper by 125% and crops the
+composition, and the result read as a wallpaper rather than as the composed shot
+it was: the restraint that made the frame good was exactly what the crop
+destroyed. A contained clip at its own aspect ratio, with the copy beside it
+rather than over it, is the layout this art supports.
+
+**Consequences:** The provenance story now shows the four states as motion the
+reader drives, opposite the four cards that state them in words. No claim about behaviour is added, and the
+ADR-005 obligation is still discharged by captured, not generated, media. The generated clip cannot be regenerated by a
+committed script the way `capture-media.mjs` regenerates the real capture; the
+generation constraints and the exact encode are recorded below instead, and that
+asymmetry is the price of using art at all.
+
+**Regeneration.** The first and last frames are generated as stills and animated
+between them by an image-to-video model. The constraints that keep the result
+admissible and usable, all of which must hold: near-black navy ground (`#0c1018`
+/ `#131a25`) and warm off-white paper (`#f5f0e8`); **grey ink only on the
+paper**; the cool blue `#66adff` and amber `#f3b44f` accents only off-paper; the
+paper in the left third with the right third left empty; the three light-lines
+originating from three different regions of the paper and terminating aligned at
+about 62% of the frame width; hairlines at least three pixels thick with a dim
+bloom rather than neon; a locked-off camera with no movement, no zoom and no
+parallax; the paper motionless for the whole shot; and no legible text, number,
+logo, interface, hand, or person anywhere. The delivered master is then encoded
+for scrubbing:
+
+```
+ffmpeg -i master.mp4 -an -vf "fps=12,scale=1280:-2,hqdn3d=4:4:9:9" \
+  -c:v libx264 -preset veryslow -crf 25 \
+  -g 1 -keyint_min 1 -sc_threshold 0 \
+  -pix_fmt yuv420p -movflags +faststart web/public/media/hero-scrub.mp4
+```
+
+The poster is the clip's own final frame (`-sseof -0.1 -frames:v 1`), which is
+what the reduced-motion path renders.
+
+**Revision 2 — the story scene (applied).** The clip is a contained panel in a
+two-column scene: it sticks while the four step cards scroll past it, and its
+wrapper takes its height from the grid row — that is, from the cards — so the
+playhead spans exactly the four states rather than an arbitrary viewport
+multiple. Measured in the browser at 1440x900, the mapping is exact: a quarter of
+the scene is 2.52 s of a 10.08 s clip, so each of the clip's four staged beats
+lands opposite its own card. The clip is square art on an even background, so it
+needs no crop and shows no letterbox band — the two failures of the hero attempt
+are both absent by construction. Square rather than 16:9 because the motion in
+the clip is horizontal (document, then lines, then markers): a vertical frame has
+nowhere to put that path, and 16:9 in a 530px column left the portrait sheet
+297px tall with half the frame empty above and below it. Below 901px the panel is a plain block
+above the cards.
+
+Two behaviours follow from the medium rather than from the layout. Some browsers
+will not paint a seek on a video that has never decoded a frame, so the clip
+appears frozen on its poster wherever the reader scrolls; one muted play,
+immediately paused, gets a frame decoded, and a rejected promise is simply the
+browser declining. And the asset's aspect ratio is declared by the caller rather
+than discovered from metadata, so the box is reserved before the file loads and
+the page does not reflow around it.
+
+One behaviour follows from the layout rather than from the mechanism: a wrapper
+no taller than the viewport (the stacked small-screen case) has nothing to scrub
+across, and it resolves to the **last** frame, not the first. A frozen first
+frame would show the setup of the animation and none of its point, while the last
+frame is the same still the reduced-motion path already presents.
+
+**Revision 1 — the hero.** The hero integration was reverted at the repository
+owner's direction after looking at it running: full-bleed cropping made the art
+worse than the intermediate contained version. `web/src/components/ScrubVideo.tsx`,
+its tests, and `web/src/styles/scrub.css` are retained unused for the story scene;
+`hero-scrub.mp4` and its poster were deleted, and the static hero preview is
+restored unchanged. Two findings from that attempt are worth keeping: the clip's
+background is a lit mid grey at the upper-left corner rather than the page ink, so
+any letterboxed placement shows a hard band unless the frame is generated with an
+even background; and a delivered master carries roughly one keyframe per file, so
+the all-intra re-encode above is not optional.

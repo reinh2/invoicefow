@@ -144,7 +144,37 @@
   margin-bottom: var(--space-4);
 }
 
-/* Provenance story */
+/* Provenance story.
+
+   From 901px up the scene is two columns: a scroll-scrubbed clip that sticks
+   while the four step cards scroll past it (ADR-018). The clip's wrapper takes
+   its height from the grid row — that is, from the cards — so the playhead spans
+   exactly the four states rather than an arbitrary viewport multiple. Below that
+   width the clip is a plain block above the cards: there is no room for a column
+   beside them, and a 300px-wide video is not worth a column anyway. */
+
+.story-scene {
+  display: grid;
+  gap: var(--space-6);
+}
+
+@media (min-width: 901px) {
+  .story-scene {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+    gap: var(--space-8);
+    align-items: start;
+  }
+
+  /* Centres the clip in the viewport while it is stuck, so it sits opposite
+     whichever card is currently being read. */
+  .story-scrub[data-motion='scroll'] .scrub-viewport {
+    align-content: center;
+  }
+}
+
+.story-scrub .scrub-media {
+  border: 1px solid var(--line);
+}
 
 .story-steps {
   display: grid;

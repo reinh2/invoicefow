@@ -7,6 +7,7 @@ import {
   type ReactNode,
 } from 'react';
 import { StatusTag, type StatusTone } from './StatusTag';
+import { ScrubVideo } from './ScrubVideo';
 import { useReducedMotion } from '../motion/useReducedMotion';
 
 /* Every value below is the fictional ORCHARD-001 demo document that ships in
@@ -243,29 +244,41 @@ export function ProvenanceStory(): ReactElement {
           network call, and no customer data.
         </p>
       </div>
-      <ol className="story-steps" data-motion={reducedMotion ? 'static' : 'scroll'}>
-        {steps.map((step, index) => (
-          <li
-            key={step.state}
-            ref={register(index)}
-            data-step-index={index}
-            data-active={!reducedMotion && index === active ? 'true' : 'false'}
-            data-passed={!reducedMotion && index < active ? 'true' : 'false'}
-            data-inview={reducedMotion || revealed[index] ? 'true' : 'false'}
-            style={{ '--story-step': index } as CSSProperties}
-          >
-            <p className="story-index" aria-hidden="true">
-              {index + 1}
-            </p>
-            <div className="story-body">
-              <StatusTag tone={step.tone}>{step.state}</StatusTag>
-              <h3>{step.title}</h3>
-              <p>{step.body}</p>
-              {step.panel}
-            </div>
-          </li>
-        ))}
-      </ol>
+      <div className="story-scene">
+        {/* Decorative: the clip is an abstraction of the four states the cards
+            beside it state in words, so it carries nothing of its own (ADR-018). */}
+        <ScrubVideo
+          className="story-scrub"
+          src="/media/story-scrub.mp4"
+          poster="/media/story-scrub-poster.jpg"
+          aspect="1 / 1"
+          scrollLength="100%"
+          decorative
+        />
+        <ol className="story-steps" data-motion={reducedMotion ? 'static' : 'scroll'}>
+          {steps.map((step, index) => (
+            <li
+              key={step.state}
+              ref={register(index)}
+              data-step-index={index}
+              data-active={!reducedMotion && index === active ? 'true' : 'false'}
+              data-passed={!reducedMotion && index < active ? 'true' : 'false'}
+              data-inview={reducedMotion || revealed[index] ? 'true' : 'false'}
+              style={{ '--story-step': index } as CSSProperties}
+            >
+              <p className="story-index" aria-hidden="true">
+                {index + 1}
+              </p>
+              <div className="story-body">
+                <StatusTag tone={step.tone}>{step.state}</StatusTag>
+                <h3>{step.title}</h3>
+                <p>{step.body}</p>
+                {step.panel}
+              </div>
+            </li>
+          ))}
+        </ol>
+      </div>
     </section>
   );
 }

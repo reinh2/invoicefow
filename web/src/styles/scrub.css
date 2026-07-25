@@ -1,0 +1,54 @@
+/* Scroll-scrubbed video (ADR-018).
+
+   Mobile first, and deliberately so: the small-screen and reduced-motion layout
+   is a plain stacked block — copy above, media below, no sticky positioning and
+   no overlay. Text over video is only ever readable when there is room for it,
+   so the overlay is introduced from 901px up and only for the scroll path.
+
+   The clip's own background is the same near-black as the page, so letterboxing
+   the media with `contain` is invisible while `cover` would crop away the empty
+   area the frame was composed to leave for the copy. */
+
+.scrub {
+  position: relative;
+}
+
+.scrub-viewport {
+  display: flex;
+  flex-direction: column-reverse;
+  gap: var(--space-6);
+}
+
+.scrub-media {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 100%;
+  aspect-ratio: var(--scrub-aspect, 16 / 9);
+  object-fit: contain;
+  border-radius: var(--radius-lg);
+  background: var(--ink);
+}
+
+@media (min-width: 901px) {
+  .scrub[data-motion='scroll'] {
+    height: var(--scrub-length, 240vh);
+  }
+
+  /* The section holds still while the playhead advances, then releases. */
+  .scrub[data-motion='scroll'] .scrub-viewport {
+    position: sticky;
+    top: 0;
+    display: grid;
+    place-items: center;
+    height: 100svh;
+    gap: 0;
+  }
+
+  .scrub[data-motion='scroll'] .scrub-overlay {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    align-content: center;
+  }
+}

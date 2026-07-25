@@ -7,6 +7,7 @@
 package webui
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -15,6 +16,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const (
@@ -183,14 +185,19 @@ func (b *Bundle) Handler() http.Handler {
 	})
 }
 
+// write answers with the whole asset, or with the byte range the client asked
+// for. Range support is not an optimisation here: a browser seeking a video it
+// has not fully buffered requests a range, and a server that answers every
+// request with 200 and the entire body makes seeking fail rather than merely
+// slow. http.ServeContent implements the conditional and range rules; it keeps
+// the Content-Type already set above, so nothing is sniffed from the body.
 func (b *Bundle) write(w http.ResponseWriter, r *http.Request, a asset) {
 	b.writeHeaders(w, a)
 	w.Header().Set("Content-Type", a.contentType)
-	w.WriteHeader(http.StatusOK)
-	if r.Method == http.MethodHead {
-		return
-	}
-	_, _ = w.Write(a.body)
+	// An empty name and a zero time keep content-type sniffing and
+	// Last-Modified out of it; the bundle is in memory and has no file identity
+	// to expose. Range handling does not depend on either.
+	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(a.body))
 }
 
 func (b *Bundle) writeHeaders(w http.ResponseWriter, a asset) {
